@@ -1,3 +1,0 @@
-/home/jack/Documents/Simulation_City/camera_zoom_system/build/CMakeFiles/CameraZoomSystem.dir
-/home/jack/Documents/Simulation_City/camera_zoom_system/build/CMakeFiles/edit_cache.dir
-/home/jack/Documents/Simulation_City/camera_zoom_system/build/CMakeFiles/rebuild_cache.dir
