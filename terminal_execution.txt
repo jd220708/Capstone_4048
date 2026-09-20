@@ -1,0 +1,53 @@
+pkill -9 -f px4
+pkill -9 -f "gz sim"
+pkill -9 -f gazebo
+
+export GZ_SIM_SYSTEM_PLUGIN_PATH="$HOME/Documents/Simulation_City/sphere_system/build:$HOME/Documents/Simulation_City/camera_zoom_system/build:$GZ_SIM_SYSTEM_PLUGIN_PATH"
+
+cd ~/PX4-Autopilot
+
+PX4_GZ_WORLD=city_test make px4_sitl gz_x500_gimbal
+
+-------------------------------
+
+cd ~/Downloads
+
+./QGroundControl-x86_64.AppImage
+
+------------------------------
+
+micro-xrce-dds-agent udp4 -p 8888
+
+--------------------------------
+
+source /opt/ros/jazzy/setup.bash
+source ~/ros2_ws/install/setup.bash
+
+ros2 run px4_circle_camera keyboard_offboard
+
+-----------------------------------
+
+source /opt/ros/jazzy/setup.bash
+source ~/ros2_ws/install/setup.bash
+
+ros2 run ros_gz_bridge parameter_bridge \
+/world/city_test/model/x500_gimbal_0/link/camera_link/sensor/camera/image@sensor_msgs/msg/Image[gz.msgs.Image \
+/model/x500_gimbal_0/command/gimbal_pitch_demo@std_msgs/msg/Float64]gz.msgs.Double \
+/model/x500_gimbal_0/command/gimbal_yaw_demo@std_msgs/msg/Float64]gz.msgs.Double \
+/model/x500_gimbal_0/camera/zoom/cmd_zoom@std_msgs/msg/Float64]gz.msgs.Double \
+--ros-args \
+-r /world/city_test/model/x500_gimbal_0/link/camera_link/sensor/camera/image:=/x500/camera/image
+
+--------------------------------------
+
+source /opt/ros/jazzy/setup.bash
+source ~/ros2_ws/install/setup.bash
+
+ros2 run rqt_image_view rqt_image_view /x500/camera/image
+
+---------------------------------------
+
+gz topic \
+-t /model/x500_gimbal_0/camera/zoom/cmd_zoom \
+-m gz.msgs.Double \
+-p "data: 1.0"
