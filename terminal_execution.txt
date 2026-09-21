@@ -1,3 +1,5 @@
+// These close all instances of px4, gazebo etc. and executes the simulation. The location of the files required for the simulation will differ user-to-user so make sure the directives are correct.
+
 pkill -9 -f px4
 pkill -9 -f "gz sim"
 pkill -9 -f gazebo
@@ -9,16 +11,19 @@ cd ~/PX4-Autopilot
 PX4_GZ_WORLD=city_test make px4_sitl gz_x500_gimbal
 
 -------------------------------
+// Opens QGC, a requirement for the x500 to arm.
 
 cd ~/Downloads
 
 ./QGroundControl-x86_64.AppImage
 
 ------------------------------
+// Bridges the drone to allow it to be controlled by the user.
 
 micro-xrce-dds-agent udp4 -p 8888
 
 --------------------------------
+// Executes the keyboard_offboard script that allows the drone to be controlled with the user's keyboard. Occasionally, this fails to arm the drone, in this case "ctrl + C" in the terminal cancels the script, and it can be run again.
 
 source /opt/ros/jazzy/setup.bash
 source ~/ros2_ws/install/setup.bash
@@ -26,6 +31,7 @@ source ~/ros2_ws/install/setup.bash
 ros2 run px4_circle_camera keyboard_offboard
 
 -----------------------------------
+// Bridges parameters between ros2 & gazebo, this is essential for view the camera and controlling the gimball
 
 source /opt/ros/jazzy/setup.bash
 source ~/ros2_ws/install/setup.bash
@@ -39,6 +45,7 @@ ros2 run ros_gz_bridge parameter_bridge \
 -r /world/city_test/model/x500_gimbal_0/link/camera_link/sensor/camera/image:=/x500/camera/image
 
 --------------------------------------
+// Runs an image viewer connected to the x500 camera.
 
 source /opt/ros/jazzy/setup.bash
 source ~/ros2_ws/install/setup.bash
@@ -46,6 +53,7 @@ source ~/ros2_ws/install/setup.bash
 ros2 run rqt_image_view rqt_image_view /x500/camera/image
 
 ---------------------------------------
+// Use this command to check if the zoom is working
 
 gz topic \
 -t /model/x500_gimbal_0/camera/zoom/cmd_zoom \
