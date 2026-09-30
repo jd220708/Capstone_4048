@@ -1,0 +1,158 @@
+import numpy as np
+
+class TargetKalmanFilter:
+  
+    def __init__(self, process_noise_std=0.5, measurement_noise_std=1.0):
+        # process_noise_std: needs to be tuned. Refers to the level of trust of the constant velocity assumption.
+        # Smaller number = High confidence. 
+        # measurement_noise_std: needs to be tuned. Refers to level of trust of the projected ground position of target (impacted by camera res, projection error and detector error)
+        # This may be negligable in the end, but 1.0 (metre) is a placeholder for now. 
+        self.process_noise_std = process_noise_std
+
+        self.measurement_noise_std = measurement_noise_std
+       
+        self.x = None
+        # self.x holds the best current estimate of [x, y, vx, vy]
+        # It starts as None (meaning not zeros) so when get_state() is called before any detection it will show no estimate exists yet rather than a fake estimate. 
+
+        self.P = None
+        # self.P holds the current uncertainty about the estimate as a 4x4 covariance matrix
+        # Holds our confidence in the state. Larger value means we are less confident. (P_k from Amirali's notes)
+
+        self.last_timestamp = None
+        # Stores the timestamp of the last update so that the time gap can be computed for the next update
+
+    def initialise(self, x, y, timestamp):
+        # Called automatically the first time a detection arrives fora target with no existing estimate
+
+        self.x = np.array([x, y, 0.0, 0.0])
+        # The intial state vector. Position comes from first measurement. Velocity set to 0.0 because we need at least two points to infer movement
+
+        self.P = np.diag([1.0, 1.0, 10.0, 10.0])
+        # np.diag intiialises the covariance matrix with the variances of each state variable on the diagonal. The non diagonal elements are zero meaning we assume no initial correlation between position and velocity.
+        # Position uncertainty is small at 1.0, velocity uncertainty high at 10.0 
+        # Record when this estimate was made, so the next call to
+        # update() or predict() can compute the elapsed time correctly.
+        self.last_timestamp = timestamp
+
+    def _motion_model(self, dt):
+        # This builds 'F', the state transition matrix for the constant velocity assumption over a time gap dt seconds.
+
+        F = np.array([
+            [1, 0, dt, 0],   # new_x  = 1*x + 0*y + dt*vx + 0*vy
+            [0, 1, 0, dt],   # new_y  = 0*x + 1*y + 0*vx + dt*vy
+            [0, 0, 1, 0],    # new_vx = unchanged
+            [0, 0, 0, 1],    # new_vy = unchanged
+        ])
+        return F
+        #Constant velocity model is linear. F is the same structure as the state vector, with dt in the appropriate places to update position based on velocity.
+
+
+    def _process_noise(self, dt):
+        # This builds 'Q' which is the process noise covariance matrix. It represents the uncertainty that we add at every prediction step.
+        # Q accounts for the constant velocity model being an approximation, not perfect truth.
+        # Even if the sphere does not move at constant velocity, Q accounts for it.
+        # Larger Q means we trust the constant velocity assumption less. The filter will be more willing to change its estimate based on new measurements.
+
+        q = self.process_noise_std ** 2
+        # Squaring standard deviation gives variance. We do this because Q is the covariance matrix.
+
+        dt2 = dt * dt
+        dt3 = dt2 * dt
+        dt4 = dt3 * dt
+        # We use dt^2, dt^3 and dt^4 to build the Q matrix because the uncertainty in position grows faster than the uncertainty in velocity over time. 
+        # The longer we go without a measurement, the more uncertain we are about where the target is, and this is approximated by the powers of dt.
+
+        Q = q * np.array([
+            [dt4/4,     0, dt3/2,     0],  # x-position noise + x/vx coupling
+            [    0, dt4/4,     0, dt3/2],  # y-position noise + y/vy coupling
+            [dt3/2,     0,   dt2,     0],  # x/vx coupling + vx noise
+            [    0, dt3/2,     0,   dt2],  # y/vy coupling + vy noise
+        ])
+        return Q
+        # This is taken from standard Kalman filter theory for constant velocity models. 
+        # Captures that position uncertainty growth is faster than velocity uncertainty growth, and that they are correlated (compounding over time)
+
+    def predict(self, dt):
+        # Brings the filters clock up to the new measurements timestamp
+    
+        if self.x is None:
+            # Any prediction before the first measurement is meaningless because we have no state to predict from, so it must be flagged as an error.
+            raise RuntimeError(
+                "predict() called before initialise() -- "
+                "the filter has no state yet."
+            )
+
+        F = self._motion_model(dt)
+        Q = self._process_noise(dt)
+        # Get the F and Q matrixies for this time step. (F is state transition matrix, Q is process noise covariance matrix)
+
+        self.x = F @ self.x
+        # Predicted state = F applied to the current state. (@ is python matrix multiplication operator)
+
+        self.P = F @ self.P @ F.T + Q
+        # F @ P @ F.T propagates the existing uncertainty through the motion model. Adding Q adds any new uncertainty from the model's imperfection over this time step.
+
+    def update(self, x_meas, y_meas, timestamp):
+        # This is where a new detections position is entered into the filter
+
+        if self.x is None:
+            # If there is no existing estimate for a target, the first measurement is used to initialise the filter. This is a rare case where we have no prior state to predict from.
+            self.initialise(x_meas, y_meas, timestamp)
+            return
+
+        dt = timestamp - self.last_timestamp
+        # How much time has passed since the last update
+
+        if dt < 0:
+            # If a measurement arrives with an earlier timestamp, it is a bug from the upstream code. We ignore it rather than corrupting the filter.
+            # This is a failsafe line.
+            return
+
+        self.predict(dt)
+        # Step 1 brings the estimate up to the current measurements timestamp using the motion model only.
+
+        H = np.array([
+            [1, 0, 0, 0],   # measured x comes from state's x
+            [0, 1, 0, 0],   # measured y comes from state's y
+        ])
+        # H is the measurement matrix. It describes the observable parts of the state.
+        # We only ever measure the position (x, y) directly, never the velocity (vx, vy). So H picks out just those two entries from the 4 element state.
+
+        r = self.measurement_noise_std ** 2
+        R = np.diag([r, r])
+        # R is the measurement noise variance matrix. It represents our trust in the measurement. 
+        # Squaring converts standard deviation to variance. We assume x and y measurement errors are independent and equally as noisy
+
+        z = np.array([x_meas, y_meas])
+        # The raw measurements are converted to a 2 element vector to match measurement matrix H.
+
+        y_innovation = z - H @ self.x
+        # Innovation is the difference between what we actually measured (z here) and what our prediction expected to see(H @ self.x - which extracts the predicted x,y from the full state).
+        # Larger innovation means the measurement was further from our prediction, which will cause the filter to adjust more. 
+
+        S = H @ self.P @ H.T + R
+        # Innovation covariance S is how much uncertainty we would expect in that innovation.
+        # We combine our own predictions uncertainty (H @ P @ H.T) with the measurement's own noise (R)
+
+        K = self.P @ H.T @ np.linalg.inv(S)
+        # K is the Kalman gain. This decides how much to move our estimate toward the new measurement versus keeping our prediction (the core of the filter).
+        # This decision is based on the relative sizes of P (our uncertainty) and R (the measurement's uncertainty).
+
+        self.x = self.x + K @ y_innovation
+        # The new state is the old state plus the innovation scaled by the Kalman gain.
+
+        I = np.eye(4)
+        self.P = (I - K @ H) @ self.P
+        # The covariance is updated to reflect the increased certainty from the measurement.
+
+        self.last_timestamp = timestamp
+        # Record this measurements timestamp so the next update calls the correct dt. 
+        # This is critical as the filter has its own internal clock that must be kept in sync with the measurements, instead of a global clock.
+
+    def get_state(self):
+        # Returns the current best estimate, or nothing if nothing has been observed yet.
+
+        if self.x is None:
+            return None
+        return self.x.copy(), self.P.copy() 
