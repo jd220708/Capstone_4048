@@ -9,3 +9,5 @@ px4_circle_camera is the ros2 folder containing the code to control the px4 dron
 terminal_execution is used as a template for running the simulation, it is based on file locations that won't be relevant to us all but is a good template. 
 
 target_kalman_filter contains the state estimation filter that maintains a continuously updated best estimate of the target's position and velocity. It takes into account how confident that estimate is using a stream of noisy position observations. It outputs the exact starting point that the lost target belief map needs the moment tracking is occluded.
+
+capstone_runtime see folder for readme
