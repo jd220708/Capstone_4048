@@ -1,41 +1,20 @@
-// These close all instances of px4, gazebo etc. and executes the simulation. The location of the files required for the simulation will differ user-to-user so make sure the directives are correct.
-
-pkill -9 -f px4
-pkill -9 -f "gz sim"
-pkill -9 -f gazebo
-
+Terminal 1
+pkill -9 -f px4 2>/dev/null || true
+pkill -9 -f "gz sim" 2>/dev/null || true
 export GZ_SIM_SYSTEM_PLUGIN_PATH="$HOME/Documents/Simulation_City/sphere_system/build:$HOME/Documents/Simulation_City/camera_zoom_system/build:$GZ_SIM_SYSTEM_PLUGIN_PATH"
-
 cd ~/PX4-Autopilot
-
 PX4_GZ_WORLD=city_test make px4_sitl gz_x500_gimbal
 
--------------------------------
-// Opens QGC, a requirement for the x500 to arm.
-
+Terminal 2
 cd ~/Downloads
-
 ./QGroundControl-x86_64.AppImage
 
-------------------------------
-// Bridges the drone to allow it to be controlled by the user.
-
+Terminal 3
 micro-xrce-dds-agent udp4 -p 8888
 
---------------------------------
-// Executes the keyboard_offboard script that allows the drone to be controlled with the user's keyboard. Occasionally, this fails to arm the drone, in this case "ctrl + C" in the terminal cancels the script, and it can be run again.
-
+Terminal 4
 source /opt/ros/jazzy/setup.bash
 source ~/ros2_ws/install/setup.bash
-
-ros2 run px4_circle_camera keyboard_offboard
-
------------------------------------
-// Bridges parameters between ros2 & gazebo, this is essential for view the camera and controlling the gimball
-
-source /opt/ros/jazzy/setup.bash
-source ~/ros2_ws/install/setup.bash
-
 ros2 run ros_gz_bridge parameter_bridge \
 /world/city_test/model/x500_gimbal_0/link/camera_link/sensor/camera/image@sensor_msgs/msg/Image[gz.msgs.Image \
 /model/x500_gimbal_0/command/gimbal_pitch_demo@std_msgs/msg/Float64]gz.msgs.Double \
@@ -44,18 +23,53 @@ ros2 run ros_gz_bridge parameter_bridge \
 --ros-args \
 -r /world/city_test/model/x500_gimbal_0/link/camera_link/sensor/camera/image:=/x500/camera/image
 
---------------------------------------
-// Runs an image viewer connected to the x500 camera.
-
+Terminal 5
 source /opt/ros/jazzy/setup.bash
 source ~/ros2_ws/install/setup.bash
+source ~/ros_yolo_env/bin/activate
+python3 ~/Documents/Simulation_City/capstone_runtime/scripts/sphere_detector.py \
+--model ~/Documents/Simulation_City/capstone_runtime/model/sphere_n.pt
 
-ros2 run rqt_image_view rqt_image_view /x500/camera/image
+Terminal 6
+source /opt/ros/jazzy/setup.bash
+source ~/ros2_ws/install/setup.bash
+python3 ~/Documents/Simulation_City/capstone_runtime/scripts/gimbal_tracker.py \
+--kp 0.15 \
+--deadzone 0.04 \
+--hfov 2.0 \
+--aspect 1.0
 
----------------------------------------
-// Use this command to check if the zoom is working
+Terminal 7
+source /opt/ros/jazzy/setup.bash
+source ~/ros2_ws/install/setup.bash
+python3 ~/Documents/Simulation_City/capstone_runtime/scripts/target_estimator.py \
+--hfov 2.0 \
+--aspect 1.0 \
+--invert-gimbal-yaw \
+--lag 0.8 \
+--smooth 0.15 \
+--vel-window 50 \
+--max-speed 100 \
+--out ~/Documents/Simulation_City/capstone_runtime/logs/target_log_$(date +%Y%m%d_%H%M%S).csv
 
-gz topic \
--t /model/x500_gimbal_0/camera/zoom/cmd_zoom \
--m gz.msgs.Double \
--p "data: 1.0"
+Terminal 8
+source /opt/ros/jazzy/setup.bash
+source ~/ros2_ws/install/setup.bash
+python3 ~/Documents/Simulation_City/capstone_runtime/scripts/drone_follower_V2.py \
+--rate 20 \
+--kp-yaw 0.3
+
+Terminal 9
+source /opt/ros/jazzy/setup.bash
+source ~/ros2_ws/install/setup.bash
+python3 ~/Documents/Simulation_City/capstone_runtime/map_system/top_down_map.py \
+--map-image ~/Documents/Simulation_City/capstone_runtime/map_system/city_topdown.png \
+--xmin 0 \
+--xmax 1556 \
+--ymin 0 \
+--ymax 1573
+
+Terminal 10
+source /opt/ros/jazzy/setup.bash
+source ~/ros2_ws/install/setup.bash
+ros2 run rqt_image_view rqt_image_view /sphere_detector/image_annotated
