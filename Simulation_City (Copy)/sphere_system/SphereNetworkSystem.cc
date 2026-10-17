@@ -64,7 +64,7 @@ struct PinkRoute
 
 
 // ============================================================
-// GROUP
+// GROUP / PATH
 // ============================================================
 
 struct Group
@@ -103,7 +103,9 @@ struct ActiveSphere
   gz::math::Vector3d direction;
 
   double speed{1.0};
+
   double spawnTime{0.0};
+
   double pathLength{0.0};
 };
 
@@ -144,37 +146,79 @@ public:
     // --------------------------------------------------------
 
     this->entityCreator =
-      std::make_unique<
-        gz::sim::SdfEntityCreator
-      >(
+      std::make_unique<gz::sim::SdfEntityCreator>(
         _ecm,
         _eventMgr
       );
 
 
     // --------------------------------------------------------
-    // START TOPIC
+    // CONTROL TOPICS
     // --------------------------------------------------------
 
-    const bool subscribed =
+    const bool trafficSubscribed =
       this->transportNode.Subscribe(
-        "/sphere_network/start",
-        &SphereNetworkSystem::OnStartCommand,
+        "/sphere_network/start_traffic",
+        &SphereNetworkSystem::OnStartTraffic,
         this
       );
 
 
-    if (subscribed)
+    const bool pinkSubscribed =
+      this->transportNode.Subscribe(
+        "/sphere_network/start_pink",
+        &SphereNetworkSystem::OnStartPink,
+        this
+      );
+
+
+    const bool deleteSubscribed =
+      this->transportNode.Subscribe(
+        "/sphere_network/delete_all",
+        &SphereNetworkSystem::OnDeleteAll,
+        this
+      );
+
+
+    if (trafficSubscribed)
     {
       gzmsg
-        << "[SphereNetwork] Waiting for start command on "
-        << "/sphere_network/start\n";
+        << "[SphereNetwork] Listening on "
+        << "/sphere_network/start_traffic\n";
     }
     else
     {
       gzerr
         << "[SphereNetwork] Failed to subscribe to "
-        << "/sphere_network/start\n";
+        << "/sphere_network/start_traffic\n";
+    }
+
+
+    if (pinkSubscribed)
+    {
+      gzmsg
+        << "[SphereNetwork] Listening on "
+        << "/sphere_network/start_pink\n";
+    }
+    else
+    {
+      gzerr
+        << "[SphereNetwork] Failed to subscribe to "
+        << "/sphere_network/start_pink\n";
+    }
+
+
+    if (deleteSubscribed)
+    {
+      gzmsg
+        << "[SphereNetwork] Listening on "
+        << "/sphere_network/delete_all\n";
+    }
+    else
+    {
+      gzerr
+        << "[SphereNetwork] Failed to subscribe to "
+        << "/sphere_network/delete_all\n";
     }
 
 
@@ -265,17 +309,13 @@ public:
 
 
         group.start =
-          groupElement->Get<
-            gz::math::Vector3d
-          >(
+          groupElement->Get<gz::math::Vector3d>(
             "start"
           );
 
 
         group.end =
-          groupElement->Get<
-            gz::math::Vector3d
-          >(
+          groupElement->Get<gz::math::Vector3d>(
             "end"
           );
 
@@ -359,8 +399,8 @@ public:
     }
     else
     {
-      gzmsg
-        << "[SphereNetwork] No normal groups configured.\n";
+      gzerr
+        << "[SphereNetwork] No groups configured.\n";
     }
 
 
@@ -376,11 +416,7 @@ public:
         );
 
 
-      if (
-        pinkElement->HasElement(
-          "speed"
-        )
-      )
+      if (pinkElement->HasElement("speed"))
       {
         this->pinkRoute.speed =
           pinkElement->Get<double>(
@@ -389,11 +425,7 @@ public:
       }
 
 
-      if (
-        pinkElement->HasElement(
-          "waypoint"
-        )
-      )
+      if (pinkElement->HasElement("waypoint"))
       {
         auto waypointElement =
           pinkElement->FindElement(
@@ -425,16 +457,18 @@ public:
       )
       {
         gzerr
-          << "[SphereNetwork] pink_route needs at least "
-          << "two waypoints.\n";
+          << "[SphereNetwork] pink_route needs "
+          << "at least two waypoints.\n";
       }
       else if (
-        this->pinkRoute.speed <= 0.0
+        this->pinkRoute.speed
+        <=
+        0.0
       )
       {
         gzerr
-          << "[SphereNetwork] pink_route speed must "
-          << "be greater than zero.\n";
+          << "[SphereNetwork] pink_route speed "
+          << "must be greater than zero.\n";
       }
       else
       {
@@ -479,9 +513,15 @@ public:
 
         if (
           this->pinkRoute.totalLength
-          >
+          <=
           0.0001
         )
+        {
+          gzerr
+            << "[SphereNetwork] pink_route "
+            << "has zero total length.\n";
+        }
+        else
         {
           this->pinkRoute.enabled =
             true;
@@ -503,8 +543,10 @@ public:
     gzmsg
       << "[SphereNetwork] Ready. "
       << this->groups.size()
-      << " normal groups loaded. "
-      << "Spheres will NOT spawn until commanded.\n";
+      << " groups loaded.\n";
+
+    gzmsg
+      << "[SphereNetwork] Waiting for control commands.\n";
   }
 
 
@@ -529,37 +571,137 @@ public:
       ).count();
 
 
-    // --------------------------------------------------------
-    // WAIT FOR BUTTON / COMMAND
-    // --------------------------------------------------------
+    // ========================================================
+    // DELETE ALL / RESET
+    // ========================================================
 
-    if (!this->started.load())
-    {
-      if (
-        !this->startRequested.exchange(
-          false
-        )
+    if (
+      this->deleteAllRequested.exchange(
+        false
       )
-      {
-        return;
-      }
+    )
+    {
+      this->DeleteAllSpheres();
 
 
-      this->started.store(
-        true
+      this->trafficRunning =
+        false;
+
+
+      this->timersInitialised =
+        false;
+
+
+      this->trafficStartRequested.store(
+        false
       );
 
 
+      this->pinkStartRequested.store(
+        false
+      );
+
+
+      this->sphereCounter =
+        0;
+
+
+      this->lastMotionUpdate =
+        now;
+
+
       gzmsg
-        << "[SphereNetwork] Starting sphere network.\n";
+        << "[SphereNetwork] All spheres deleted. "
+        << "Ready for another run.\n";
+
+
+      return;
     }
 
 
-    // --------------------------------------------------------
-    // INITIALISE TIMERS AT START MOMENT
-    // --------------------------------------------------------
+    // ========================================================
+    // START TRAFFIC
+    // ========================================================
 
-    if (!this->timersInitialised)
+    if (
+      this->trafficStartRequested.exchange(
+        false
+      )
+    )
+    {
+      if (!this->trafficRunning)
+      {
+        this->trafficRunning =
+          true;
+
+
+        this->timersInitialised =
+          false;
+
+
+        gzmsg
+          << "[SphereNetwork] Traffic started.\n";
+      }
+      else
+      {
+        gzmsg
+          << "[SphereNetwork] Traffic already running.\n";
+      }
+    }
+
+
+    // ========================================================
+    // START PINK TARGET
+    // ========================================================
+
+    if (
+      this->pinkStartRequested.exchange(
+        false
+      )
+    )
+    {
+      if (
+        this->pinkRoute.enabled
+        &&
+        this->pinkRoute.entity
+        ==
+        gz::sim::kNullEntity
+      )
+      {
+        this->SpawnPinkSphere(
+          now
+        );
+
+
+        gzmsg
+          << "[SphereNetwork] Pink target started.\n";
+      }
+      else if (
+        this->pinkRoute.entity
+        !=
+        gz::sim::kNullEntity
+      )
+      {
+        gzmsg
+          << "[SphereNetwork] Pink target already active.\n";
+      }
+      else
+      {
+        gzerr
+          << "[SphereNetwork] Pink route is not enabled.\n";
+      }
+    }
+
+
+    // ========================================================
+    // INITIALISE TRAFFIC TIMERS
+    // ========================================================
+
+    if (
+      this->trafficRunning
+      &&
+      !this->timersInitialised
+    )
     {
       for (
         auto &group :
@@ -574,61 +716,47 @@ public:
       }
 
 
-      if (
-        this->pinkRoute.enabled
-        &&
-        this->pinkRoute.entity
-        ==
-        gz::sim::kNullEntity
-      )
-      {
-        this->SpawnPinkSphere(
-          now
-        );
-      }
-
-
-      this->lastMotionUpdate =
-        now;
-
-
       this->timersInitialised =
         true;
     }
 
 
-    // --------------------------------------------------------
-    // NORMAL GROUP SPAWNING
-    // --------------------------------------------------------
+    // ========================================================
+    // TRAFFIC SPAWNING
+    // ========================================================
 
-    for (
-      auto &group :
-      this->groups
-    )
+    if (this->trafficRunning)
     {
-      if (
-        now >=
-        group.nextSpawnTime
+      for (
+        auto &group :
+        this->groups
       )
       {
-        this->SpawnSphere(
-          group,
+        if (
           now
-        );
-
-
-        group.nextSpawnTime =
-          now +
-          this->RandomSpawnDelay(
-            group
+          >=
+          group.nextSpawnTime
+        )
+        {
+          this->SpawnSphere(
+            group,
+            now
           );
+
+
+          group.nextSpawnTime =
+            now +
+            this->RandomSpawnDelay(
+              group
+            );
+        }
       }
     }
 
 
-    // --------------------------------------------------------
-    // MOVEMENT
-    // --------------------------------------------------------
+    // ========================================================
+    // MOTION UPDATE
+    // ========================================================
 
     const double updatePeriod =
       1.0 /
@@ -669,6 +797,125 @@ public:
     gz::sim::EntityComponentManager &
   ) override
   {
+    this->DeleteAllSpheres();
+
+
+    this->trafficRunning =
+      false;
+
+
+    this->timersInitialised =
+      false;
+
+
+    this->lastMotionUpdate =
+      0.0;
+
+
+    this->sphereCounter =
+      0;
+
+
+    this->trafficStartRequested.store(
+      false
+    );
+
+
+    this->pinkStartRequested.store(
+      false
+    );
+
+
+    this->deleteAllRequested.store(
+      false
+    );
+
+
+    gzmsg
+      << "[SphereNetwork] Reset complete.\n";
+  }
+
+
+private:
+
+  // ==========================================================
+  // START TRAFFIC COMMAND
+  // ==========================================================
+
+  void OnStartTraffic(
+    const gz::msgs::Boolean &_msg
+  )
+  {
+    if (!_msg.data())
+    {
+      return;
+    }
+
+
+    this->trafficStartRequested.store(
+      true
+    );
+
+
+    gzmsg
+      << "[SphereNetwork] Traffic start command received.\n";
+  }
+
+
+  // ==========================================================
+  // START PINK COMMAND
+  // ==========================================================
+
+  void OnStartPink(
+    const gz::msgs::Boolean &_msg
+  )
+  {
+    if (!_msg.data())
+    {
+      return;
+    }
+
+
+    this->pinkStartRequested.store(
+      true
+    );
+
+
+    gzmsg
+      << "[SphereNetwork] Pink target command received.\n";
+  }
+
+
+  // ==========================================================
+  // DELETE ALL COMMAND
+  // ==========================================================
+
+  void OnDeleteAll(
+    const gz::msgs::Boolean &_msg
+  )
+  {
+    if (!_msg.data())
+    {
+      return;
+    }
+
+
+    this->deleteAllRequested.store(
+      true
+    );
+
+
+    gzmsg
+      << "[SphereNetwork] Delete/reset command received.\n";
+  }
+
+
+  // ==========================================================
+  // DELETE ALL SPHERES
+  // ==========================================================
+
+  void DeleteAllSpheres()
+  {
     for (
       const auto &sphere :
       this->activeSpheres
@@ -706,62 +953,8 @@ public:
     }
 
 
-    this->timersInitialised =
-      false;
-
-
-    this->lastMotionUpdate =
-      0.0;
-
-
-    this->startRequested.store(
-      false
-    );
-
-
-    this->started.store(
-      false
-    );
-
-
     gzmsg
-      << "[SphereNetwork] Reset. Waiting for start command.\n";
-  }
-
-
-private:
-
-  // ==========================================================
-  // START COMMAND
-  // ==========================================================
-
-  void OnStartCommand(
-    const gz::msgs::Boolean &_msg
-  )
-  {
-    if (!_msg.data())
-    {
-      return;
-    }
-
-
-    if (this->started.load())
-    {
-      gzmsg
-        << "[SphereNetwork] Start ignored: "
-        << "network already running.\n";
-
-      return;
-    }
-
-
-    this->startRequested.store(
-      true
-    );
-
-
-    gzmsg
-      << "[SphereNetwork] Start command received.\n";
+      << "[SphereNetwork] All sphere entities removed.\n";
   }
 
 
@@ -824,27 +1017,45 @@ private:
     > colours =
     {
       gz::math::Color(
-        1.00, 0.00, 0.00, 1.00
+        1.00,
+        0.00,
+        0.00,
+        1.00
       ),
 
       gz::math::Color(
-        0.00, 1.00, 0.10, 1.00
+        0.00,
+        1.00,
+        0.10,
+        1.00
       ),
 
       gz::math::Color(
-        0.00, 0.25, 1.00, 1.00
+        0.00,
+        0.25,
+        1.00,
+        1.00
       ),
 
       gz::math::Color(
-        1.00, 1.00, 0.00, 1.00
+        1.00,
+        1.00,
+        0.00,
+        1.00
       ),
 
       gz::math::Color(
-        0.55, 0.05, 1.00, 1.00
+        0.55,
+        0.05,
+        1.00,
+        1.00
       ),
 
       gz::math::Color(
-        1.00, 0.35, 0.00, 1.00
+        1.00,
+        0.35,
+        0.00,
+        1.00
       )
     };
 
@@ -967,6 +1178,7 @@ private:
       name
     );
 
+
     modelSdf.SetStatic(
       true
     );
@@ -999,26 +1211,34 @@ private:
 
     ActiveSphere active;
 
+
     active.entity =
       entity;
+
 
     active.name =
       name;
 
+
     active.groupName =
       _group.name;
+
 
     active.start =
       _group.start;
 
+
     active.direction =
       _group.direction;
+
 
     active.speed =
       speed;
 
+
     active.spawnTime =
       _now;
+
 
     active.pathLength =
       _group.length;
@@ -1090,9 +1310,11 @@ private:
       pink
     );
 
+
     material.SetDiffuse(
       pink
     );
+
 
     material.SetEmissive(
       gz::math::Color(
@@ -1110,9 +1332,11 @@ private:
       "sphere_visual"
     );
 
+
     visual.SetGeom(
       geometry
     );
+
 
     visual.SetMaterial(
       material
@@ -1125,6 +1349,7 @@ private:
       "sphere_link"
     );
 
+
     link.AddVisual(
       visual
     );
@@ -1135,6 +1360,7 @@ private:
     modelSdf.SetName(
       "pink_route_sphere"
     );
+
 
     modelSdf.SetStatic(
       true
@@ -1255,8 +1481,7 @@ private:
 
 
         const double t =
-          distance
-          /
+          distance /
           segmentLength;
 
 
@@ -1325,8 +1550,7 @@ private:
 
 
       const double distance =
-        elapsed
-        *
+        elapsed *
         sphere.speed;
 
 
@@ -1402,7 +1626,8 @@ private:
   > entityCreator;
 
 
-  gz::transport::Node transportNode;
+  gz::transport::Node
+    transportNode;
 
 
   std::vector<Group>
@@ -1422,21 +1647,31 @@ private:
 
 
   std::atomic<bool>
-    startRequested{
+    trafficStartRequested{
       false
     };
 
 
   std::atomic<bool>
-    started{
+    pinkStartRequested{
       false
     };
 
 
-  std::size_t
-    sphereCounter{
-      0
+  std::atomic<bool>
+    deleteAllRequested{
+      false
     };
+
+
+  bool trafficRunning{
+    false
+  };
+
+
+  std::size_t sphereCounter{
+    0
+  };
 
 
   double sphereRadius{
@@ -1468,7 +1703,7 @@ private:
 
 
 // ============================================================
-// REGISTER PLUGIN
+// REGISTER GAZEBO PLUGIN
 // ============================================================
 
 GZ_ADD_PLUGIN(
