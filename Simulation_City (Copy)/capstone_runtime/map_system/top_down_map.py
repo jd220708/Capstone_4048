@@ -40,30 +40,19 @@ try:
         Boolean
     )
 
-
 except ImportError:
 
-    try:
+    from gz.transport14 import (
+        Node as GazeboNode
+    )
 
-        from gz.transport14 import (
-            Node as GazeboNode
-        )
+    from gz.msgs11.pose_v_pb2 import (
+        Pose_V
+    )
 
-        from gz.msgs11.pose_v_pb2 import (
-            Pose_V
-        )
-
-        from gz.msgs11.boolean_pb2 import (
-            Boolean
-        )
-
-
-    except ImportError:
-
-        raise SystemExit(
-            "Gazebo Python transport "
-            "bindings not found."
-        )
+    from gz.msgs11.boolean_pb2 import (
+        Boolean
+    )
 
 
 # ============================================================
@@ -74,34 +63,22 @@ except ImportError:
 class TrackedEntity:
 
     label: str
-
     marker: str
-
     color: str
-
     size: float
 
-
     x: float = None
-
     y: float = None
-
     z: float = None
-
 
     yaw: float = None
 
-
     vx: float = None
-
     vy: float = None
-
 
     updated_at: float = 0.0
 
-
     trail: deque = field(
-
         default_factory=lambda:
         deque(
             maxlen=600
@@ -127,14 +104,13 @@ class TopDownMap(Node):
 
         self.args = args
 
-
         self.lock = (
             threading.Lock()
         )
 
 
         # ====================================================
-        # ENTITY REGISTRY
+        # ENTITIES
         # ====================================================
 
         self.entities = {
@@ -142,54 +118,30 @@ class TopDownMap(Node):
             "drone":
 
             TrackedEntity(
-
-                label=
-                "Drone",
-
-                marker=
-                "^",
-
-                color=
-                "tab:blue",
-
-                size=
-                100,
+                label="Drone",
+                marker="^",
+                color="tab:blue",
+                size=100,
             ),
 
 
             "target_true":
 
             TrackedEntity(
-
-                label=
-                "Target - True",
-
-                marker=
-                "o",
-
-                color=
-                "deeppink",
-
-                size=
-                90,
+                label="Target - True",
+                marker="o",
+                color="deeppink",
+                size=90,
             ),
 
 
             "target_detected":
 
             TrackedEntity(
-
-                label=
-                "Target - Detected",
-
-                marker=
-                "x",
-
-                color=
-                "tab:orange",
-
-                size=
-                100,
+                label="Target - Detected",
+                marker="x",
+                color="tab:orange",
+                size=100,
             ),
         }
 
@@ -200,7 +152,10 @@ class TopDownMap(Node):
 
         self.variables = {
 
-            "Sphere network":
+            "Sphere traffic":
+            "WAITING",
+
+            "Pink target":
             "WAITING",
 
             "Target detection":
@@ -215,7 +170,7 @@ class TopDownMap(Node):
 
 
         # ====================================================
-        # GAZEBO TRANSPORT
+        # GAZEBO
         # ====================================================
 
         self.gz_node = (
@@ -251,7 +206,6 @@ class TopDownMap(Node):
                 f"{self.gz_topic}"
             )
 
-
         else:
 
             self.get_logger().error(
@@ -262,21 +216,46 @@ class TopDownMap(Node):
 
 
         # ====================================================
-        # SPHERE START PUBLISHER
+        # SPHERE CONTROL PUBLISHERS
         # ====================================================
 
-        self.sphere_start_pub = (
+        self.traffic_start_pub = (
             self.gz_node.advertise(
 
-                "/sphere_network/start",
+                "/sphere_network/start_traffic",
 
                 Boolean,
             )
         )
 
 
+        self.pink_start_pub = (
+            self.gz_node.advertise(
+
+                "/sphere_network/start_pink",
+
+                Boolean,
+            )
+        )
+
+
+        self.delete_spheres_pub = (
+            self.gz_node.advertise(
+
+                "/sphere_network/delete_all",
+
+                Boolean,
+            )
+        )
+
+
+        self.get_logger().info(
+            "Sphere control publishers ready."
+        )
+
+
         # ====================================================
-        # DETECTED TARGET
+        # TARGET ESTIMATOR
         # ====================================================
 
         self.create_subscription(
@@ -351,7 +330,6 @@ class TopDownMap(Node):
 
             background = (
                 plt.imread(
-
                     self.args.map_image
                 )
             )
@@ -372,14 +350,12 @@ class TopDownMap(Node):
                     self.args.ymax,
                 ],
 
-                # Flipped across X axis
                 origin="upper",
 
                 aspect="equal",
 
                 zorder=0,
             )
-
 
         else:
 
@@ -431,13 +407,11 @@ class TopDownMap(Node):
 
 
         self.ax.set_xlabel(
-
             "World X (m)"
         )
 
 
         self.ax.set_ylabel(
-
             "World Y (m)"
         )
 
@@ -456,7 +430,7 @@ class TopDownMap(Node):
 
 
         # ====================================================
-        # ENTITY MARKERS
+        # MARKERS
         # ====================================================
 
         self.points = {}
@@ -477,17 +451,13 @@ class TopDownMap(Node):
 
                     [],
 
-                    s=
-                    entity.size,
+                    s=entity.size,
 
-                    marker=
-                    entity.marker,
+                    marker=entity.marker,
 
-                    color=
-                    entity.color,
+                    color=entity.color,
 
-                    label=
-                    entity.label,
+                    label=entity.label,
 
                     zorder=6,
                 )
@@ -501,17 +471,13 @@ class TopDownMap(Node):
 
                     [],
 
-                    color=
-                    entity.color,
+                    color=entity.color,
 
-                    linewidth=
-                    1.2,
+                    linewidth=1.2,
 
-                    alpha=
-                    0.55,
+                    alpha=0.55,
 
-                    zorder=
-                    4,
+                    zorder=4,
                 )
             )
 
@@ -532,20 +498,17 @@ class TopDownMap(Node):
 
                 [],
 
-                color=
-                "tab:blue",
+                color="tab:blue",
 
-                linewidth=
-                2,
+                linewidth=2,
 
-                zorder=
-                5,
+                zorder=5,
             )
         )
 
 
         # ====================================================
-        # DETECTED TARGET VELOCITY
+        # TARGET VELOCITY
         # ====================================================
 
         self.velocity_line, = (
@@ -555,20 +518,17 @@ class TopDownMap(Node):
 
                 [],
 
-                color=
-                "tab:orange",
+                color="tab:orange",
 
-                linewidth=
-                2,
+                linewidth=2,
 
-                zorder=
-                5,
+                zorder=5,
             )
         )
 
 
         # ====================================================
-        # TRUE ↔ DETECTED ERROR
+        # DETECTION ERROR
         # ====================================================
 
         self.error_line, = (
@@ -578,30 +538,24 @@ class TopDownMap(Node):
 
                 [],
 
-                linestyle=
-                "--",
+                linestyle="--",
 
-                color=
-                "gray",
+                color="gray",
 
-                linewidth=
-                1.4,
+                linewidth=1.4,
 
-                zorder=
-                5,
+                zorder=5,
             )
         )
 
 
         self.ax.legend(
-
-            loc=
-            "upper right"
+            loc="upper right"
         )
 
 
         # ====================================================
-        # TELEMETRY TEXT
+        # TELEMETRY
         # ====================================================
 
         self.info_text = (
@@ -613,28 +567,51 @@ class TopDownMap(Node):
 
                 "Waiting for data...",
 
-                va=
-                "top",
+                va="top",
 
-                family=
-                "monospace",
+                family="monospace",
 
-                fontsize=
-                10,
+                fontsize=10,
             )
         )
 
 
         # ====================================================
-        # SPAWN SPHERES BUTTON
+        # CONTROL BUTTONS
         # ====================================================
 
-        self.spawn_button_ax = (
+        self.traffic_button_ax = (
             self.fig.add_axes(
 
                 [
-                    0.79,
-                    0.035,
+                    0.50,
+                    0.025,
+                    0.14,
+                    0.055,
+                ]
+            )
+        )
+
+
+        self.pink_button_ax = (
+            self.fig.add_axes(
+
+                [
+                    0.65,
+                    0.025,
+                    0.14,
+                    0.055,
+                ]
+            )
+        )
+
+
+        self.delete_button_ax = (
+            self.fig.add_axes(
+
+                [
+                    0.80,
+                    0.025,
                     0.16,
                     0.055,
                 ]
@@ -642,45 +619,67 @@ class TopDownMap(Node):
         )
 
 
-        self.spawn_button = (
+        self.traffic_button = (
             Button(
 
-                self.spawn_button_ax,
+                self.traffic_button_ax,
 
-                "Spawn Spheres"
+                "Spawn Traffic"
             )
         )
 
 
-        self.spawn_button.on_clicked(
+        self.pink_button = (
+            Button(
 
-            self.spawn_spheres
+                self.pink_button_ax,
+
+                "Spawn Pink"
+            )
         )
 
 
-        # Leave room for button
+        self.delete_button = (
+            Button(
+
+                self.delete_button_ax,
+
+                "Delete / Reset"
+            )
+        )
+
+
+        self.traffic_button.on_clicked(
+            self.spawn_traffic
+        )
+
+
+        self.pink_button.on_clicked(
+            self.spawn_pink
+        )
+
+
+        self.delete_button.on_clicked(
+            self.delete_all_spheres
+        )
+
 
         self.fig.subplots_adjust(
 
-            left=
-            0.07,
+            left=0.07,
 
-            right=
-            0.96,
+            right=0.96,
 
-            bottom=
-            0.12,
+            bottom=0.12,
 
-            top=
-            0.93,
+            top=0.93,
 
-            wspace=
-            0.12,
+            wspace=0.12,
         )
 
 
         # ====================================================
-        # GUI UPDATE
+        # ANIMATION
         # ====================================================
 
         self.animation = (
@@ -690,22 +689,20 @@ class TopDownMap(Node):
 
                 self.update_map,
 
-                interval=
-                100,
+                interval=100,
 
-                cache_frame_data=
-                False,
+                cache_frame_data=False,
             )
         )
 
 
     # ========================================================
-    # SPAWN SPHERES
+    # SEND SPHERE COMMAND
     # ========================================================
 
-    def spawn_spheres(
+    def send_sphere_command(
         self,
-        event
+        publisher
     ):
 
         msg = Boolean()
@@ -714,7 +711,7 @@ class TopDownMap(Node):
 
 
         result = (
-            self.sphere_start_pub.publish(
+            publisher.publish(
                 msg
             )
         )
@@ -722,30 +719,187 @@ class TopDownMap(Node):
 
         if result is False:
 
-            self.get_logger().warning(
+            return False
 
-                "Sphere start command "
-                "could not be sent."
+
+        return True
+
+
+    # ========================================================
+    # SPAWN TRAFFIC
+    # ========================================================
+
+    def spawn_traffic(
+        self,
+        event
+    ):
+
+        if self.send_sphere_command(
+            self.traffic_start_pub
+        ):
+
+            self.variables[
+                "Sphere traffic"
+            ] = "RUNNING"
+
+
+            self.get_logger().info(
+                "Traffic start command sent."
+            )
+
+        else:
+
+            self.variables[
+                "Sphere traffic"
+            ] = "SEND FAILED"
+
+
+            self.get_logger().warning(
+                "Traffic start command failed."
             )
 
 
+    # ========================================================
+    # SPAWN PINK
+    # ========================================================
+
+    def spawn_pink(
+        self,
+        event
+    ):
+
+        if self.send_sphere_command(
+            self.pink_start_pub
+        ):
+
             self.variables[
-                "Sphere network"
+                "Pink target"
+            ] = "ACTIVE"
+
+
+            self.get_logger().info(
+                "Pink target command sent."
+            )
+
+        else:
+
+            self.variables[
+                "Pink target"
             ] = "SEND FAILED"
 
+
+            self.get_logger().warning(
+                "Pink target command failed."
+            )
+
+
+    # ========================================================
+    # DELETE / RESET
+    # ========================================================
+
+    def delete_all_spheres(
+        self,
+        event
+    ):
+
+        if not self.send_sphere_command(
+            self.delete_spheres_pub
+        ):
+
+            self.get_logger().warning(
+                "Delete/reset command failed."
+            )
 
             return
 
 
         self.variables[
-            "Sphere network"
-        ] = "START SENT"
+            "Sphere traffic"
+        ] = "WAITING"
+
+
+        self.variables[
+            "Pink target"
+        ] = "WAITING"
+
+
+        self.variables[
+            "Target detection"
+        ] = "WAITING"
+
+
+        self.variables[
+            "Detection error"
+        ] = None
+
+
+        # Clear true and detected target
+        # markers and trails.
+
+        for name in [
+
+            "target_true",
+
+            "target_detected",
+
+        ]:
+
+            entity = (
+                self.entities[
+                    name
+                ]
+            )
+
+
+            entity.x = None
+
+            entity.y = None
+
+            entity.z = None
+
+            entity.vx = None
+
+            entity.vy = None
+
+            entity.updated_at = 0.0
+
+            entity.trail.clear()
+
+
+            self.points[
+                name
+            ].set_offsets(
+
+                [[
+                    float("nan"),
+
+                    float("nan"),
+                ]]
+            )
+
+
+            self.trails[
+                name
+            ].set_data(
+                [],
+                []
+            )
+
+
+        self.velocity_line.set_data(
+            [],
+            []
+        )
+
+
+        self.error_line.set_data(
+            [],
+            []
+        )
 
 
         self.get_logger().info(
-
-            "Sphere network start "
-            "command sent."
+            "Delete/reset command sent."
         )
 
 
@@ -878,7 +1032,7 @@ class TopDownMap(Node):
 
 
     # ========================================================
-    # GAZEBO POSES
+    # GAZEBO CALLBACK
     # ========================================================
 
     def gazebo_callback(
@@ -890,19 +1044,14 @@ class TopDownMap(Node):
 
             for pose in msg.pose:
 
-                full_name = (
-                    pose.name
-                )
-
-
                 name = (
-                    full_name
+                    pose.name
                     .split("::")[-1]
                 )
 
 
                 # ----------------------------------------
-                # DRONE TRUE POSITION
+                # DRONE
                 # ----------------------------------------
 
                 if (
@@ -923,14 +1072,13 @@ class TopDownMap(Node):
 
                         yaw=
                         self.quaternion_yaw(
-
                             pose.orientation
                         ),
                     )
 
 
                 # ----------------------------------------
-                # PINK TARGET TRUE POSITION
+                # PINK TRUE TARGET
                 # ----------------------------------------
 
                 elif (
@@ -952,7 +1100,7 @@ class TopDownMap(Node):
 
 
     # ========================================================
-    # DETECTED TARGET
+    # TARGET ESTIMATOR CALLBACK
     # ========================================================
 
     def target_callback(
@@ -1019,22 +1167,18 @@ class TopDownMap(Node):
         frame
     ):
 
-        # Process ROS messages without
-        # a separate spin thread.
-
         rclpy.spin_once(
 
             self,
 
-            timeout_sec=
-            0.0,
+            timeout_sec=0.0,
         )
 
 
         with self.lock:
 
             # ============================================
-            # ENTITY MARKERS AND TRAILS
+            # MARKERS / TRAILS
             # ============================================
 
             for (
@@ -1044,9 +1188,7 @@ class TopDownMap(Node):
 
                 if (
                     entity.x is None
-
                     or
-
                     entity.y is None
                 ):
 
@@ -1108,13 +1250,9 @@ class TopDownMap(Node):
 
             if (
                 drone.x is not None
-
                 and
-
                 drone.y is not None
-
                 and
-
                 drone.yaw is not None
             ):
 
@@ -1153,17 +1291,14 @@ class TopDownMap(Node):
 
                     [
                         drone.x,
-
                         x2,
                     ],
 
                     [
                         drone.y,
-
                         y2,
                     ],
                 )
-
 
             else:
 
@@ -1174,7 +1309,7 @@ class TopDownMap(Node):
 
 
             # ============================================
-            # DETECTED TARGET VELOCITY
+            # TARGET VELOCITY
             # ============================================
 
             target_detected = (
@@ -1229,7 +1364,6 @@ class TopDownMap(Node):
                         seconds,
                     ],
                 )
-
 
             else:
 
@@ -1304,7 +1438,6 @@ class TopDownMap(Node):
                     ],
                 )
 
-
             else:
 
                 self.error_line.set_data(
@@ -1334,6 +1467,7 @@ class TopDownMap(Node):
                 "target_true",
 
                 "target_detected",
+
             ]:
 
                 entity = (
@@ -1348,13 +1482,13 @@ class TopDownMap(Node):
                 )
 
 
-                if entity.x is None:
+                if (
+                    entity.x is None
+                ):
 
                     lines.append(
-
                         "  waiting..."
                     )
-
 
                 else:
 
@@ -1507,8 +1641,7 @@ def main():
 
         type=float,
 
-        default=
-        0.0,
+        default=0.0,
     )
 
 
@@ -1518,8 +1651,7 @@ def main():
 
         type=float,
 
-        default=
-        1556.0,
+        default=1556.0,
     )
 
 
@@ -1529,8 +1661,7 @@ def main():
 
         type=float,
 
-        default=
-        0.0,
+        default=0.0,
     )
 
 
@@ -1540,8 +1671,7 @@ def main():
 
         type=float,
 
-        default=
-        1573.0,
+        default=1573.0,
     )
 
 
@@ -1564,11 +1694,9 @@ def main():
 
         plt.show()
 
-
     except KeyboardInterrupt:
 
         pass
-
 
     finally:
 
