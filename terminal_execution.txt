@@ -1,7 +1,7 @@
 Terminal 1
 pkill -9 -f px4 2>/dev/null || true
 pkill -9 -f "gz sim" 2>/dev/null || true
-export G_SIM_SYSTEM_PLUGIN_PATH="$HOME/Documents/Simulation_City/sphere_system/build:$HOME/Documents/Simulation_City/camera_zoom_system/build:$GZ_SIM_SYSTEM_PLUGIN_PATH"
+export GZ_SIM_SYSTEM_PLUGIN_PATH="$HOME/Documents/Simulation_City/sphere_system/build:$HOME/Documents/Simulation_City/camera_zoom_system/build:$GZ_SIM_SYSTEM_PLUGIN_PATH"
 cd ~/PX4-Autopilot
 PX4_GZ_WORLD=city_test \
 PX4_GZ_MODEL_POSE="740,45,0,0,0,0" \
