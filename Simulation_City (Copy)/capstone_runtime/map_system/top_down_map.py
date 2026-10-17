@@ -22,42 +22,16 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 
-# ============================================================
-# GAZEBO TRANSPORT
-# ============================================================
-
 try:
-
-    from gz.transport13 import (
-        Node as GazeboNode
-    )
-
-    from gz.msgs10.pose_v_pb2 import (
-        Pose_V
-    )
-
-    from gz.msgs10.boolean_pb2 import (
-        Boolean
-    )
+    from gz.transport13 import Node as GazeboNode
+    from gz.msgs10.pose_v_pb2 import Pose_V
+    from gz.msgs10.boolean_pb2 import Boolean
 
 except ImportError:
+    from gz.transport14 import Node as GazeboNode
+    from gz.msgs11.pose_v_pb2 import Pose_V
+    from gz.msgs11.boolean_pb2 import Boolean
 
-    from gz.transport14 import (
-        Node as GazeboNode
-    )
-
-    from gz.msgs11.pose_v_pb2 import (
-        Pose_V
-    )
-
-    from gz.msgs11.boolean_pb2 import (
-        Boolean
-    )
-
-
-# ============================================================
-# TRACKED ENTITY
-# ============================================================
 
 @dataclass
 class TrackedEntity:
@@ -79,65 +53,40 @@ class TrackedEntity:
     updated_at: float = 0.0
 
     trail: deque = field(
-        default_factory=lambda:
-        deque(
-            maxlen=600
-        )
+        default_factory=lambda: deque(maxlen=0)
     )
 
 
-# ============================================================
-# TOP DOWN MAP
-# ============================================================
-
 class TopDownMap(Node):
 
-    def __init__(
-        self,
-        args
-    ):
+    def __init__(self, args):
 
-        super().__init__(
-            "top_down_map"
-        )
-
+        super().__init__("top_down_map")
 
         self.args = args
+        self.lock = threading.Lock()
 
-        self.lock = (
-            threading.Lock()
-        )
+        self.last_gazebo_process_time = 0.0
+        self.gazebo_process_period = 0.1
 
-
-        # ====================================================
-        # ENTITIES
-        # ====================================================
 
         self.entities = {
 
-            "drone":
-
-            TrackedEntity(
+            "drone": TrackedEntity(
                 label="Drone",
                 marker="^",
                 color="tab:blue",
                 size=100,
             ),
 
-
-            "target_true":
-
-            TrackedEntity(
+            "target_true": TrackedEntity(
                 label="Target - True",
                 marker="o",
                 color="deeppink",
                 size=90,
             ),
 
-
-            "target_detected":
-
-            TrackedEntity(
+            "target_detected": TrackedEntity(
                 label="Target - Detected",
                 marker="x",
                 color="tab:orange",
@@ -145,10 +94,6 @@ class TopDownMap(Node):
             ),
         }
 
-
-        # ====================================================
-        # VARIABLES
-        # ====================================================
 
         self.variables = {
 
@@ -173,84 +118,51 @@ class TopDownMap(Node):
         # GAZEBO
         # ====================================================
 
-        self.gz_node = (
-            GazeboNode()
-        )
-
+        self.gz_node = GazeboNode()
 
         self.gz_topic = (
-
-            f"/world/"
-            f"{args.world}"
-            f"/pose/info"
+            f"/world/{args.world}/pose/info"
         )
 
-
-        subscribed = (
-            self.gz_node.subscribe(
-
-                Pose_V,
-
-                self.gz_topic,
-
-                self.gazebo_callback,
-            )
+        subscribed = self.gz_node.subscribe(
+            Pose_V,
+            self.gz_topic,
+            self.gazebo_callback,
         )
-
 
         if subscribed:
-
             self.get_logger().info(
-
-                "Gazebo map tracking active: "
-                f"{self.gz_topic}"
+                f"Gazebo map tracking active: {self.gz_topic}"
             )
-
         else:
-
             self.get_logger().error(
-
-                "Could not subscribe to "
-                "Gazebo poses."
+                "Could not subscribe to Gazebo poses."
             )
 
 
         # ====================================================
-        # SPHERE CONTROL PUBLISHERS
+        # SPHERE CONTROL
         # ====================================================
 
         self.traffic_start_pub = (
             self.gz_node.advertise(
-
                 "/sphere_network/start_traffic",
-
                 Boolean,
             )
         )
-
 
         self.pink_start_pub = (
             self.gz_node.advertise(
-
                 "/sphere_network/start_pink",
-
                 Boolean,
             )
         )
-
 
         self.delete_spheres_pub = (
             self.gz_node.advertise(
-
                 "/sphere_network/delete_all",
-
                 Boolean,
             )
-        )
-
-
-        self.get_logger().info(
-            "Sphere control publishers ready."
         )
 
 
@@ -259,13 +171,9 @@ class TopDownMap(Node):
         # ====================================================
 
         self.create_subscription(
-
             String,
-
             "/target_estimator/target",
-
             self.target_callback,
-
             10,
         )
 
@@ -275,48 +183,21 @@ class TopDownMap(Node):
         # ====================================================
 
         self.fig = plt.figure(
-
-            figsize=(
-                12,
-                8
-            )
+            figsize=(12, 8)
         )
 
-
-        layout = (
-            self.fig.add_gridspec(
-
-                1,
-
-                2,
-
-                width_ratios=[
-                    4,
-                    1.3,
-                ],
-            )
+        layout = self.fig.add_gridspec(
+            1,
+            2,
+            width_ratios=[4, 1.3],
         )
 
-
-        self.ax = (
-            self.fig.add_subplot(
-
-                layout[
-                    0,
-                    0
-                ]
-            )
+        self.ax = self.fig.add_subplot(
+            layout[0, 0]
         )
 
-
-        self.info_ax = (
-            self.fig.add_subplot(
-
-                layout[
-                    0,
-                    1
-                ]
-            )
+        self.info_ax = self.fig.add_subplot(
+            layout[0, 1]
         )
 
 
@@ -328,41 +209,21 @@ class TopDownMap(Node):
             self.args.map_image
         ):
 
-            background = (
-                plt.imread(
-                    self.args.map_image
-                )
+            background = plt.imread(
+                self.args.map_image
             )
-
 
             self.ax.imshow(
-
                 background,
-
                 extent=[
-
                     self.args.xmin,
-
                     self.args.xmax,
-
                     self.args.ymin,
-
                     self.args.ymax,
                 ],
-
                 origin="upper",
-
                 aspect="equal",
-
                 zorder=0,
-            )
-
-        else:
-
-            self.get_logger().warning(
-
-                "Map image not found: "
-                f"{self.args.map_image}"
             )
 
 
@@ -371,58 +232,38 @@ class TopDownMap(Node):
         # ====================================================
 
         self.ax.set_xlim(
-
             self.args.xmin,
-
             self.args.xmax,
         )
 
-
         self.ax.set_ylim(
-
             self.args.ymin,
-
             self.args.ymax,
         )
 
-
-        self.ax.set_autoscale_on(
-            False
-        )
-
+        self.ax.set_autoscale_on(False)
 
         self.ax.set_aspect(
-
             "equal",
-
             adjustable="box",
         )
 
-
         self.ax.set_title(
-
-            "UAV Project - "
-            "Top Down Tracking Map"
+            "UAV Project - Top Down Tracking Map"
         )
-
 
         self.ax.set_xlabel(
             "World X (m)"
         )
 
-
         self.ax.set_ylabel(
             "World Y (m)"
         )
 
-
         self.ax.grid(
-
             True,
-
             alpha=0.25,
         )
-
 
         self.info_ax.axis(
             "off"
@@ -434,118 +275,57 @@ class TopDownMap(Node):
         # ====================================================
 
         self.points = {}
-
         self.trails = {}
 
+        for name, entity in self.entities.items():
 
-        for (
-            name,
-            entity
-        ) in self.entities.items():
-
-            self.points[name] = (
-
-                self.ax.scatter(
-
-                    [],
-
-                    [],
-
-                    s=entity.size,
-
-                    marker=entity.marker,
-
-                    color=entity.color,
-
-                    label=entity.label,
-
-                    zorder=6,
-                )
-            )
-
-
-            line, = (
-                self.ax.plot(
-
-                    [],
-
-                    [],
-
-                    color=entity.color,
-
-                    linewidth=1.2,
-
-                    alpha=0.55,
-
-                    zorder=4,
-                )
-            )
-
-
-            self.trails[name] = (
-                line
-            )
-
-
-        # ====================================================
-        # DRONE HEADING
-        # ====================================================
-
-        self.heading_line, = (
-            self.ax.plot(
-
+            self.points[name] = self.ax.scatter(
                 [],
-
                 [],
-
-                color="tab:blue",
-
-                linewidth=2,
-
-                zorder=5,
+                s=entity.size,
+                marker=entity.marker,
+                color=entity.color,
+                label=entity.label,
+                zorder=6,
             )
+
+            line, = self.ax.plot(
+                [],
+                [],
+                color=entity.color,
+                linewidth=1.2,
+                alpha=0.55,
+                zorder=4,
+            )
+
+            self.trails[name] = line
+
+
+        self.heading_line, = self.ax.plot(
+            [],
+            [],
+            color="tab:blue",
+            linewidth=2,
+            zorder=5,
         )
 
 
-        # ====================================================
-        # TARGET VELOCITY
-        # ====================================================
-
-        self.velocity_line, = (
-            self.ax.plot(
-
-                [],
-
-                [],
-
-                color="tab:orange",
-
-                linewidth=2,
-
-                zorder=5,
-            )
+        self.velocity_line, = self.ax.plot(
+            [],
+            [],
+            color="tab:orange",
+            linewidth=2,
+            zorder=5,
         )
 
 
-        # ====================================================
-        # DETECTION ERROR
-        # ====================================================
-
-        self.error_line, = (
-            self.ax.plot(
-
-                [],
-
-                [],
-
-                linestyle="--",
-
-                color="gray",
-
-                linewidth=1.4,
-
-                zorder=5,
-            )
+        self.error_line, = self.ax.plot(
+            [],
+            [],
+            linestyle="--",
+            color="gray",
+            linewidth=1.4,
+            zorder=5,
         )
 
 
@@ -554,98 +334,61 @@ class TopDownMap(Node):
         )
 
 
-        # ====================================================
-        # TELEMETRY
-        # ====================================================
-
-        self.info_text = (
-            self.info_ax.text(
-
-                0.02,
-
-                0.98,
-
-                "Waiting for data...",
-
-                va="top",
-
-                family="monospace",
-
-                fontsize=10,
-            )
+        self.info_text = self.info_ax.text(
+            0.02,
+            0.98,
+            "Waiting for data...",
+            va="top",
+            family="monospace",
+            fontsize=10,
         )
 
 
         # ====================================================
-        # CONTROL BUTTONS
+        # BUTTONS
         # ====================================================
 
-        self.traffic_button_ax = (
-            self.fig.add_axes(
+        self.traffic_button_ax = self.fig.add_axes(
+            [
+                0.50,
+                0.025,
+                0.14,
+                0.055,
+            ]
+        )
 
-                [
-                    0.50,
-                    0.025,
-                    0.14,
-                    0.055,
-                ]
-            )
+        self.pink_button_ax = self.fig.add_axes(
+            [
+                0.65,
+                0.025,
+                0.14,
+                0.055,
+            ]
+        )
+
+        self.delete_button_ax = self.fig.add_axes(
+            [
+                0.80,
+                0.025,
+                0.16,
+                0.055,
+            ]
         )
 
 
-        self.pink_button_ax = (
-            self.fig.add_axes(
-
-                [
-                    0.65,
-                    0.025,
-                    0.14,
-                    0.055,
-                ]
-            )
+        self.traffic_button = Button(
+            self.traffic_button_ax,
+            "Spawn Traffic"
         )
 
-
-        self.delete_button_ax = (
-            self.fig.add_axes(
-
-                [
-                    0.80,
-                    0.025,
-                    0.16,
-                    0.055,
-                ]
-            )
+        self.pink_button = Button(
+            self.pink_button_ax,
+            "Spawn Pink"
         )
 
-
-        self.traffic_button = (
-            Button(
-
-                self.traffic_button_ax,
-
-                "Spawn Traffic"
-            )
-        )
-
-
-        self.pink_button = (
-            Button(
-
-                self.pink_button_ax,
-
-                "Spawn Pink"
-            )
-        )
-
-
-        self.delete_button = (
-            Button(
-
-                self.delete_button_ax,
-
-                "Delete / Reset"
-            )
+        self.delete_button = Button(
+            self.delete_button_ax,
+            "Delete / Reset"
         )
 
 
@@ -653,11 +396,9 @@ class TopDownMap(Node):
             self.spawn_traffic
         )
 
-
         self.pink_button.on_clicked(
             self.spawn_pink
         )
-
 
         self.delete_button.on_clicked(
             self.delete_all_spheres
@@ -665,40 +406,21 @@ class TopDownMap(Node):
 
 
         self.fig.subplots_adjust(
-
             left=0.07,
-
             right=0.96,
-
             bottom=0.12,
-
             top=0.93,
-
             wspace=0.12,
         )
 
 
-        # ====================================================
-        # ANIMATION
-        # ====================================================
-
-        self.animation = (
-            FuncAnimation(
-
-                self.fig,
-
-                self.update_map,
-
-                interval=100,
-
-                cache_frame_data=False,
-            )
+        self.animation = FuncAnimation(
+            self.fig,
+            self.update_map,
+            interval=250,
+            cache_frame_data=False,
         )
 
-
-    # ========================================================
-    # SEND SPHERE COMMAND
-    # ========================================================
 
     def send_sphere_command(
         self,
@@ -706,28 +428,14 @@ class TopDownMap(Node):
     ):
 
         msg = Boolean()
-
         msg.data = True
 
-
-        result = (
-            publisher.publish(
-                msg
-            )
+        result = publisher.publish(
+            msg
         )
 
+        return result is not False
 
-        if result is False:
-
-            return False
-
-
-        return True
-
-
-    # ========================================================
-    # SPAWN TRAFFIC
-    # ========================================================
 
     def spawn_traffic(
         self,
@@ -743,26 +451,6 @@ class TopDownMap(Node):
             ] = "RUNNING"
 
 
-            self.get_logger().info(
-                "Traffic start command sent."
-            )
-
-        else:
-
-            self.variables[
-                "Sphere traffic"
-            ] = "SEND FAILED"
-
-
-            self.get_logger().warning(
-                "Traffic start command failed."
-            )
-
-
-    # ========================================================
-    # SPAWN PINK
-    # ========================================================
-
     def spawn_pink(
         self,
         event
@@ -777,26 +465,6 @@ class TopDownMap(Node):
             ] = "ACTIVE"
 
 
-            self.get_logger().info(
-                "Pink target command sent."
-            )
-
-        else:
-
-            self.variables[
-                "Pink target"
-            ] = "SEND FAILED"
-
-
-            self.get_logger().warning(
-                "Pink target command failed."
-            )
-
-
-    # ========================================================
-    # DELETE / RESET
-    # ========================================================
-
     def delete_all_spheres(
         self,
         event
@@ -805,11 +473,6 @@ class TopDownMap(Node):
         if not self.send_sphere_command(
             self.delete_spheres_pub
         ):
-
-            self.get_logger().warning(
-                "Delete/reset command failed."
-            )
-
             return
 
 
@@ -817,48 +480,33 @@ class TopDownMap(Node):
             "Sphere traffic"
         ] = "WAITING"
 
-
         self.variables[
             "Pink target"
         ] = "WAITING"
 
-
         self.variables[
             "Target detection"
         ] = "WAITING"
-
 
         self.variables[
             "Detection error"
         ] = None
 
 
-        # Clear true and detected target
-        # markers and trails.
-
         for name in [
-
             "target_true",
-
             "target_detected",
-
         ]:
 
-            entity = (
-                self.entities[
-                    name
-                ]
-            )
-
+            entity = self.entities[
+                name
+            ]
 
             entity.x = None
-
             entity.y = None
-
             entity.z = None
 
             entity.vx = None
-
             entity.vy = None
 
             entity.updated_at = 0.0
@@ -869,14 +517,11 @@ class TopDownMap(Node):
             self.points[
                 name
             ].set_offsets(
-
                 [[
                     float("nan"),
-
                     float("nan"),
                 ]]
             )
-
 
             self.trails[
                 name
@@ -891,21 +536,11 @@ class TopDownMap(Node):
             []
         )
 
-
         self.error_line.set_data(
             [],
             []
         )
 
-
-        self.get_logger().info(
-            "Delete/reset command sent."
-        )
-
-
-    # ========================================================
-    # QUATERNION -> YAW
-    # ========================================================
 
     def quaternion_yaw(
         self,
@@ -914,106 +549,51 @@ class TopDownMap(Node):
 
         return math.atan2(
 
-            2.0
-            *
-            (
-                q.w
-                *
-                q.z
-
+            2.0 * (
+                q.w * q.z
                 +
-
-                q.x
-                *
-                q.y
+                q.x * q.y
             ),
 
             1.0
-
             -
-
-            2.0
-            *
-            (
-                q.y
-                *
-                q.y
-
+            2.0 * (
+                q.y * q.y
                 +
-
-                q.z
-                *
-                q.z
+                q.z * q.z
             ),
         )
 
 
-    # ========================================================
-    # UPDATE ENTITY
-    # ========================================================
-
     def update_entity(
-
         self,
-
         name,
-
         x,
-
         y,
-
         z=None,
-
         yaw=None,
-
         vx=None,
-
         vy=None,
     ):
 
-        entity = (
-            self.entities[
-                name
-            ]
-        )
+        entity = self.entities[
+            name
+        ]
 
-
-        entity.x = float(
-            x
-        )
-
-
-        entity.y = float(
-            y
-        )
-
+        entity.x = float(x)
+        entity.y = float(y)
 
         if z is not None:
-
-            entity.z = float(
-                z
-            )
-
+            entity.z = float(z)
 
         if yaw is not None:
-
-            entity.yaw = float(
-                yaw
-            )
-
+            entity.yaw = float(yaw)
 
         if vx is not None:
-
-            entity.vx = float(
-                vx
-            )
-
+            entity.vx = float(vx)
 
         if vy is not None:
-
-            entity.vy = float(
-                vy
-            )
+            entity.vy = float(vy)
 
 
         entity.updated_at = (
@@ -1022,17 +602,15 @@ class TopDownMap(Node):
 
 
         entity.trail.append(
-
             (
                 entity.x,
-
                 entity.y,
             )
         )
 
 
     # ========================================================
-    # GAZEBO CALLBACK
+    # OPTIMISED GAZEBO CALLBACK
     # ========================================================
 
     def gazebo_callback(
@@ -1040,68 +618,106 @@ class TopDownMap(Node):
         msg
     ):
 
+        now = time.monotonic()
+
+
+        # Limit processing to 10 Hz
+
+        if (
+            now
+            -
+            self.last_gazebo_process_time
+            <
+            self.gazebo_process_period
+        ):
+            return
+
+
+        self.last_gazebo_process_time = (
+            now
+        )
+
+
+        drone_pose = None
+        pink_pose = None
+
+
+        # Only look for the two models we actually need
+
+        for pose in msg.pose:
+
+            name = pose.name
+
+
+            if (
+                name == "x500_gimbal_0"
+                or
+                name.endswith(
+                    "::x500_gimbal_0"
+                )
+            ):
+
+                drone_pose = pose
+
+
+            elif (
+                name == "pink_route_sphere"
+                or
+                name.endswith(
+                    "::pink_route_sphere"
+                )
+            ):
+
+                pink_pose = pose
+
+
+            # Stop scanning once both are found
+
+            if (
+                drone_pose is not None
+                and
+                pink_pose is not None
+            ):
+
+                break
+
+
+        # Only lock while updating our own data
+
         with self.lock:
 
-            for pose in msg.pose:
+            if drone_pose is not None:
 
-                name = (
-                    pose.name
-                    .split("::")[-1]
+                self.update_entity(
+
+                    "drone",
+
+                    drone_pose.position.x,
+
+                    drone_pose.position.y,
+
+                    drone_pose.position.z,
+
+                    yaw=
+                    self.quaternion_yaw(
+                        drone_pose.orientation
+                    ),
                 )
 
 
-                # ----------------------------------------
-                # DRONE
-                # ----------------------------------------
+            if pink_pose is not None:
 
-                if (
-                    name
-                    ==
-                    "x500_gimbal_0"
-                ):
+                self.update_entity(
 
-                    self.update_entity(
+                    "target_true",
 
-                        "drone",
+                    pink_pose.position.x,
 
-                        pose.position.x,
+                    pink_pose.position.y,
 
-                        pose.position.y,
+                    pink_pose.position.z,
+                )
 
-                        pose.position.z,
-
-                        yaw=
-                        self.quaternion_yaw(
-                            pose.orientation
-                        ),
-                    )
-
-
-                # ----------------------------------------
-                # PINK TRUE TARGET
-                # ----------------------------------------
-
-                elif (
-                    "pink"
-                    in
-                    name.lower()
-                ):
-
-                    self.update_entity(
-
-                        "target_true",
-
-                        pose.position.x,
-
-                        pose.position.y,
-
-                        pose.position.z,
-                    )
-
-
-    # ========================================================
-    # TARGET ESTIMATOR CALLBACK
-    # ========================================================
 
     def target_callback(
         self,
@@ -1110,17 +726,12 @@ class TopDownMap(Node):
 
         try:
 
-            data = (
-                json.loads(
-                    msg.data
-                )
+            data = json.loads(
+                msg.data
             )
 
-
             x = data["x"]
-
             y = data["y"]
-
 
         except Exception:
 
@@ -1137,19 +748,11 @@ class TopDownMap(Node):
 
                 y,
 
-                data.get(
-                    "z"
-                ),
+                data.get("z"),
 
-                vx=
-                data.get(
-                    "vx"
-                ),
+                vx=data.get("vx"),
 
-                vy=
-                data.get(
-                    "vy"
-                ),
+                vy=data.get("vy"),
             )
 
 
@@ -1158,28 +761,18 @@ class TopDownMap(Node):
             ] = "LIVE"
 
 
-    # ========================================================
-    # UPDATE MAP
-    # ========================================================
-
     def update_map(
         self,
         frame
     ):
 
         rclpy.spin_once(
-
             self,
-
             timeout_sec=0.0,
         )
 
 
         with self.lock:
-
-            # ============================================
-            # MARKERS / TRAILS
-            # ============================================
 
             for (
                 name,
@@ -1191,7 +784,6 @@ class TopDownMap(Node):
                     or
                     entity.y is None
                 ):
-
                     continue
 
 
@@ -1201,7 +793,6 @@ class TopDownMap(Node):
 
                     [[
                         entity.x,
-
                         entity.y,
                     ]]
                 )
@@ -1210,42 +801,27 @@ class TopDownMap(Node):
                 if entity.trail:
 
                     xs = [
-
                         p[0]
-
-                        for p in
-                        entity.trail
+                        for p in entity.trail
                     ]
 
-
                     ys = [
-
                         p[1]
-
-                        for p in
-                        entity.trail
+                        for p in entity.trail
                     ]
 
 
                     self.trails[
                         name
                     ].set_data(
-
                         xs,
-
                         ys,
                     )
 
 
-            # ============================================
-            # DRONE HEADING
-            # ============================================
-
-            drone = (
-                self.entities[
-                    "drone"
-                ]
-            )
+            drone = self.entities[
+                "drone"
+            ]
 
 
             if (
@@ -1260,11 +836,8 @@ class TopDownMap(Node):
 
 
                 x2 = (
-
                     drone.x
-
                     +
-
                     length
                     *
                     math.cos(
@@ -1274,11 +847,8 @@ class TopDownMap(Node):
 
 
                 y2 = (
-
                     drone.y
-
                     +
-
                     length
                     *
                     math.sin(
@@ -1300,41 +870,22 @@ class TopDownMap(Node):
                     ],
                 )
 
-            else:
 
-                self.heading_line.set_data(
-                    [],
-                    []
-                )
-
-
-            # ============================================
-            # TARGET VELOCITY
-            # ============================================
-
-            target_detected = (
-                self.entities[
-                    "target_detected"
-                ]
-            )
+            target_detected = self.entities[
+                "target_detected"
+            ]
 
 
             if (
                 target_detected.x
                 is not None
-
                 and
-
                 target_detected.y
                 is not None
-
                 and
-
                 target_detected.vx
                 is not None
-
                 and
-
                 target_detected.vy
                 is not None
             ):
@@ -1365,56 +916,35 @@ class TopDownMap(Node):
                     ],
                 )
 
-            else:
 
-                self.velocity_line.set_data(
-                    [],
-                    []
-                )
-
-
-            # ============================================
-            # DETECTION ERROR
-            # ============================================
-
-            target_true = (
-                self.entities[
-                    "target_true"
-                ]
-            )
+            target_true = self.entities[
+                "target_true"
+            ]
 
 
             if (
                 target_true.x
                 is not None
-
                 and
-
                 target_true.y
                 is not None
-
                 and
-
                 target_detected.x
                 is not None
-
                 and
-
                 target_detected.y
                 is not None
             ):
 
-                error = (
-                    math.hypot(
+                error = math.hypot(
 
-                        target_true.x
-                        -
-                        target_detected.x,
+                    target_true.x
+                    -
+                    target_detected.x,
 
-                        target_true.y
-                        -
-                        target_detected.y,
-                    )
+                    target_true.y
+                    -
+                    target_detected.y,
                 )
 
 
@@ -1427,35 +957,20 @@ class TopDownMap(Node):
 
                     [
                         target_true.x,
-
                         target_detected.x,
                     ],
 
                     [
                         target_true.y,
-
                         target_detected.y,
                     ],
                 )
 
-            else:
-
-                self.error_line.set_data(
-                    [],
-                    []
-                )
-
-
-            # ============================================
-            # TELEMETRY
-            # ============================================
 
             lines = [
 
                 "LIVE TELEMETRY",
-
                 "==============",
-
                 "",
             ]
 
@@ -1463,18 +978,14 @@ class TopDownMap(Node):
             for name in [
 
                 "drone",
-
                 "target_true",
-
                 "target_detected",
 
             ]:
 
-                entity = (
-                    self.entities[
-                        name
-                    ]
-                )
+                entity = self.entities[
+                    name
+                ]
 
 
                 lines.append(
@@ -1482,9 +993,7 @@ class TopDownMap(Node):
                 )
 
 
-                if (
-                    entity.x is None
-                ):
+                if entity.x is None:
 
                     lines.append(
                         "  waiting..."
@@ -1493,61 +1002,18 @@ class TopDownMap(Node):
                 else:
 
                     lines.append(
-
-                        f"  X: "
-                        f"{entity.x:8.2f} m"
+                        f"  X: {entity.x:8.2f} m"
                     )
-
 
                     lines.append(
-
-                        f"  Y: "
-                        f"{entity.y:8.2f} m"
+                        f"  Y: {entity.y:8.2f} m"
                     )
 
 
-                    if (
-                        entity.z
-                        is not None
-                    ):
+                    if entity.z is not None:
 
                         lines.append(
-
-                            f"  Z: "
-                            f"{entity.z:8.2f} m"
-                        )
-
-
-                    if (
-                        name
-                        ==
-                        "target_detected"
-
-                        and
-
-                        entity.vx
-                        is not None
-
-                        and
-
-                        entity.vy
-                        is not None
-                    ):
-
-                        speed = (
-                            math.hypot(
-
-                                entity.vx,
-
-                                entity.vy,
-                            )
-                        )
-
-
-                        lines.append(
-
-                            f"  V: "
-                            f"{speed:8.2f} m/s"
+                            f"  Z: {entity.z:8.2f} m"
                         )
 
 
@@ -1559,7 +1025,6 @@ class TopDownMap(Node):
             lines.append(
                 "VARIABLES"
             )
-
 
             lines.append(
                 "========="
@@ -1582,9 +1047,7 @@ class TopDownMap(Node):
 
 
                 lines.append(
-
-                    f"{name}: "
-                    f"{value}"
+                    f"{name}: {value}"
                 )
 
 
@@ -1599,23 +1062,14 @@ class TopDownMap(Node):
         return []
 
 
-# ============================================================
-# MAIN
-# ============================================================
-
 def main():
 
-    parser = (
-        argparse.ArgumentParser()
-    )
+    parser = argparse.ArgumentParser()
 
 
     parser.add_argument(
-
         "--world",
-
-        default=
-        "city_test",
+        default="city_test",
     )
 
 
@@ -1636,57 +1090,41 @@ def main():
 
 
     parser.add_argument(
-
         "--xmin",
-
         type=float,
-
         default=0.0,
     )
 
 
     parser.add_argument(
-
         "--xmax",
-
         type=float,
-
         default=1556.0,
     )
 
 
     parser.add_argument(
-
         "--ymin",
-
         type=float,
-
         default=0.0,
     )
 
 
     parser.add_argument(
-
         "--ymax",
-
         type=float,
-
         default=1573.0,
     )
 
 
-    args = (
-        parser.parse_args()
-    )
+    args = parser.parse_args()
 
 
     rclpy.init()
 
 
-    node = (
-        TopDownMap(
-            args
-        )
+    node = TopDownMap(
+        args
     )
 
 
@@ -1701,7 +1139,6 @@ def main():
     finally:
 
         node.destroy_node()
-
 
         if rclpy.ok():
 
