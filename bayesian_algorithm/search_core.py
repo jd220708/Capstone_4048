@@ -38,7 +38,7 @@ class Config:
     # gimbal (slew rate and settle time are placeholders until a step response is measured)
     pitch_min: float = math.radians(-135.0)
     pitch_max: float = math.radians(45.0)
-    slew_rate: float = math.radians(60.0)       # rad/s
+    slew_rate: float = math.radians(1.57)       # rad/s
     settle_s: float = 0.5                       # seconds to settle after arriving
     # loss and search limits
     t_lost: float = 2.0                         # seconds without a detection before declaring loss (matches gimbal_tracker)
