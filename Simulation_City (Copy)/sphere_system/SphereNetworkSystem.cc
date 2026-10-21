@@ -1,6 +1,16 @@
 // ============================================================
 // SPHERE NETWORK SYSTEM
 // ============================================================
+//
+//   - spawns individually
+//   - receives a random colour
+//   - receives a slightly random speed
+//   - moves directly along its group path
+//   - has no collision
+//   - has no physics behaviour
+//   - is deleted when it reaches the path end
+//
+// ============================================================
 
 #include <atomic>
 #include <chrono>
@@ -17,9 +27,10 @@
 #include <gz/math/Quaternion.hh>
 #include <gz/math/Vector3.hh>
 
-#include <gz/msgs/boolean.pb.h>
-
 #include <gz/plugin/Register.hh>
+
+#include <gz/msgs/boolean.pb.h>
+#include <gz/msgs/double.pb.h>
 #include <gz/transport/Node.hh>
 
 #include <gz/sim/Entity.hh>
@@ -37,13 +48,10 @@
 #include <sdf/Sphere.hh>
 #include <sdf/Visual.hh>
 
-
 namespace sphere_network
 {
 
-// ============================================================
 // PINK LOOP ROUTE
-// ============================================================
 
 struct PinkRoute
 {
@@ -55,17 +63,14 @@ struct PinkRoute
   double totalLength{0.0};
   double speed{1.0};
 
-  gz::sim::Entity entity{
-    gz::sim::kNullEntity
-  };
+  double distanceTravelled{0.0};
+  double lastUpdateTime{0.0};
 
+  gz::sim::Entity entity{gz::sim::kNullEntity};
   double spawnTime{0.0};
 };
 
-
-// ============================================================
-// GROUP / PATH
-// ============================================================
+// GROUP
 
 struct Group
 {
@@ -73,6 +78,7 @@ struct Group
 
   gz::math::Vector3d start;
   gz::math::Vector3d end;
+
   gz::math::Vector3d direction;
 
   double length{0.0};
@@ -85,16 +91,11 @@ struct Group
   double nextSpawnTime{0.0};
 };
 
-
-// ============================================================
 // ACTIVE SPHERE
-// ============================================================
 
 struct ActiveSphere
 {
-  gz::sim::Entity entity{
-    gz::sim::kNullEntity
-  };
+  gz::sim::Entity entity{gz::sim::kNullEntity};
 
   std::string name;
   std::string groupName;
@@ -103,16 +104,11 @@ struct ActiveSphere
   gz::math::Vector3d direction;
 
   double speed{1.0};
-
   double spawnTime{0.0};
-
   double pathLength{0.0};
 };
 
-
-// ============================================================
 // PLUGIN
-// ============================================================
 
 class SphereNetworkSystem:
   public gz::sim::System,
@@ -120,211 +116,126 @@ class SphereNetworkSystem:
   public gz::sim::ISystemPreUpdate,
   public gz::sim::ISystemReset
 {
-public:
+  public:
+    SphereNetworkSystem() = default;
+    ~SphereNetworkSystem() override = default;
 
-  SphereNetworkSystem() = default;
+  // CONFIG
 
-  ~SphereNetworkSystem() override = default;
+  public:
+    void Configure(
+      const gz::sim::Entity &_entity,
+      const std::shared_ptr<const sdf::Element> &_sdf,
+      gz::sim::EntityComponentManager &_ecm,
+      gz::sim::EventManager &_eventMgr
+    ) override
+    {
 
+      this->worldEntity = _entity;
 
-  // ==========================================================
-  // CONFIGURE
-  // ==========================================================
+      this->entityCreator =
+        std::make_unique<gz::sim::SdfEntityCreator>(
+          _ecm,
+          _eventMgr
+        );
 
-  void Configure(
-    const gz::sim::Entity &_entity,
-    const std::shared_ptr<const sdf::Element> &_sdf,
-    gz::sim::EntityComponentManager &_ecm,
-    gz::sim::EventManager &_eventMgr
-  ) override
-  {
-    this->worldEntity = _entity;
-
-
-    // --------------------------------------------------------
-    // ENTITY CREATOR
-    // --------------------------------------------------------
-
-    this->entityCreator =
-      std::make_unique<gz::sim::SdfEntityCreator>(
-        _ecm,
-        _eventMgr
-      );
-
-
-    // --------------------------------------------------------
-    // CONTROL TOPICS
-    // --------------------------------------------------------
-
-    const bool trafficSubscribed =
       this->transportNode.Subscribe(
         "/sphere_network/start_traffic",
         &SphereNetworkSystem::OnStartTraffic,
         this
       );
 
-
-    const bool pinkSubscribed =
       this->transportNode.Subscribe(
         "/sphere_network/start_pink",
         &SphereNetworkSystem::OnStartPink,
         this
       );
 
-
-    const bool deleteSubscribed =
       this->transportNode.Subscribe(
         "/sphere_network/delete_all",
         &SphereNetworkSystem::OnDeleteAll,
         this
       );
 
-
-    if (trafficSubscribed)
-    {
-      gzmsg
-        << "[SphereNetwork] Listening on "
-        << "/sphere_network/start_traffic\n";
-    }
-    else
-    {
-      gzerr
-        << "[SphereNetwork] Failed to subscribe to "
-        << "/sphere_network/start_traffic\n";
-    }
-
-
-    if (pinkSubscribed)
-    {
-      gzmsg
-        << "[SphereNetwork] Listening on "
-        << "/sphere_network/start_pink\n";
-    }
-    else
-    {
-      gzerr
-        << "[SphereNetwork] Failed to subscribe to "
-        << "/sphere_network/start_pink\n";
-    }
-
-
-    if (deleteSubscribed)
-    {
-      gzmsg
-        << "[SphereNetwork] Listening on "
-        << "/sphere_network/delete_all\n";
-    }
-    else
-    {
-      gzerr
-        << "[SphereNetwork] Failed to subscribe to "
-        << "/sphere_network/delete_all\n";
-    }
-
-
-    // --------------------------------------------------------
-    // GLOBAL SETTINGS
-    // --------------------------------------------------------
-
-    if (_sdf->HasElement("sphere_radius"))
-    {
-      this->sphereRadius =
-        _sdf->Get<double>(
-          "sphere_radius"
-        );
-    }
-
-
-    if (_sdf->HasElement("speed_variation"))
-    {
-      this->speedVariation =
-        _sdf->Get<double>(
-          "speed_variation"
-        );
-    }
-
-
-    if (_sdf->HasElement("motion_update_rate"))
-    {
-      this->motionUpdateRate =
-        _sdf->Get<double>(
-          "motion_update_rate"
-        );
-    }
-
-
-    // --------------------------------------------------------
-    // RANDOM SEED
-    // --------------------------------------------------------
-
-    unsigned int seed = 0;
-
-
-    if (_sdf->HasElement("random_seed"))
-    {
-      seed =
-        _sdf->Get<unsigned int>(
-          "random_seed"
-        );
-    }
-
-
-    if (seed == 0)
-    {
-      std::random_device rd;
-
-      this->rng.seed(
-        rd()
+      this->transportNode.Subscribe(
+        "/sphere_network/pink_speed",
+        &SphereNetworkSystem::OnPinkSpeed,
+        this
       );
-    }
-    else
-    {
-      this->rng.seed(
-        seed
-      );
-    }
+
+      // Global sphere settings
+
+      if (_sdf->HasElement("sphere_radius"))
+      {
+        this->sphereRadius =
+          _sdf->Get<double>("sphere_radius");
+      }
+
+      if (_sdf->HasElement("speed_variation"))
+      {
+        this->speedVariation =
+          _sdf->Get<double>("speed_variation");
+      }
+
+      if (_sdf->HasElement("motion_update_rate"))
+      {
+        this->motionUpdateRate =
+          _sdf->Get<double>("motion_update_rate");
+      }
+
+      unsigned int seed = 0;
+
+      if (_sdf->HasElement("random_seed"))
+      {
+        seed =
+          _sdf->Get<unsigned int>("random_seed");
+      }
+
+      if (seed == 0)
+      {
+        std::random_device rd;
+
+        this->rng.seed(rd());
+      }
+      else
+      {
+        this->rng.seed(seed);
+      }
 
 
-    // --------------------------------------------------------
-    // LOAD GROUPS
-    // --------------------------------------------------------
+      if (!_sdf->HasElement("group"))
+      {
+        gzerr
+          << "[SphereNetwork] No groups configured.\n";
 
-    if (_sdf->HasElement("group"))
-    {
+        return;
+      }
+
       auto groupElement =
-        _sdf->FindElement(
-          "group"
-        );
+      _sdf->FindElement("group");
 
 
       while (groupElement)
       {
         Group group;
 
-
         group.name =
-          groupElement->Get<std::string>(
-            "name"
-          );
-
+          groupElement->Get<std::string>("name");
 
         group.start =
           groupElement->Get<gz::math::Vector3d>(
             "start"
           );
 
-
         group.end =
           groupElement->Get<gz::math::Vector3d>(
             "end"
           );
 
-
         group.baseSpeed =
           groupElement->Get<double>(
             "base_speed"
           );
-
 
         group.minSpawnInterval =
           groupElement->Get<double>(
@@ -337,15 +248,12 @@ public:
             "max_spawn_interval"
           );
 
-
         const gz::math::Vector3d delta =
           group.end -
           group.start;
 
-
         group.length =
           delta.Length();
-
 
         if (group.length <= 0.0001)
         {
@@ -354,30 +262,20 @@ public:
             << group.name
             << "] has zero-length path.\n";
 
-
           groupElement =
-            groupElement->GetNextElement(
-              "group"
-            );
-
+            groupElement->GetNextElement("group");
 
           continue;
         }
-
 
         group.direction =
           delta /
           group.length;
 
-
-        group.nextSpawnTime =
-          0.0;
+        group.nextSpawnTime = 0.0;
 
 
-        this->groups.push_back(
-          group
-        );
-
+        this->groups.push_back(group);
 
         gzmsg
           << "[SphereNetwork] Loaded group ["
@@ -390,982 +288,621 @@ public:
           << group.baseSpeed
           << " m/s\n";
 
-
         groupElement =
-          groupElement->GetNextElement(
-            "group"
-          );
-      }
-    }
-    else
-    {
-      gzerr
-        << "[SphereNetwork] No groups configured.\n";
-    }
-
-
-    // --------------------------------------------------------
-    // LOAD PINK ROUTE
-    // --------------------------------------------------------
-
-    if (_sdf->HasElement("pink_route"))
-    {
-      auto pinkElement =
-        _sdf->FindElement(
-          "pink_route"
-        );
-
-
-      if (pinkElement->HasElement("speed"))
-      {
-        this->pinkRoute.speed =
-          pinkElement->Get<double>(
-            "speed"
-          );
+          groupElement->GetNextElement("group");
       }
 
-
-      if (pinkElement->HasElement("waypoint"))
+      if (_sdf->HasElement("pink_route"))
       {
-        auto waypointElement =
-          pinkElement->FindElement(
-            "waypoint"
-          );
+        auto pinkElement = _sdf->FindElement("pink_route");
 
-
-        while (waypointElement)
+        if (pinkElement->HasElement("speed"))
         {
-          this->pinkRoute.waypoints.push_back(
-            waypointElement->Get<
-              gz::math::Vector3d
-            >()
-          );
+          this->pinkRoute.speed = pinkElement->Get<double>("speed");
+        }
 
+        if (pinkElement->HasElement("waypoint"))
+        {
+          auto waypointElement = pinkElement->FindElement("waypoint");
 
-          waypointElement =
-            waypointElement->GetNextElement(
-              "waypoint"
+          while (waypointElement)
+          {
+            this->pinkRoute.waypoints.push_back(
+              waypointElement->Get<gz::math::Vector3d>()
             );
-        }
-      }
 
-
-      if (
-        this->pinkRoute.waypoints.size()
-        <
-        2
-      )
-      {
-        gzerr
-          << "[SphereNetwork] pink_route needs "
-          << "at least two waypoints.\n";
-      }
-      else if (
-        this->pinkRoute.speed
-        <=
-        0.0
-      )
-      {
-        gzerr
-          << "[SphereNetwork] pink_route speed "
-          << "must be greater than zero.\n";
-      }
-      else
-      {
-        this->pinkRoute.totalLength =
-          0.0;
-
-
-        this->pinkRoute.segmentLengths.clear();
-
-
-        for (
-          std::size_t i = 0;
-          i < this->pinkRoute.waypoints.size();
-          ++i
-        )
-        {
-          const std::size_t next =
-            (
-              i + 1
-            )
-            %
-            this->pinkRoute.waypoints.size();
-
-
-          const double segmentLength =
-            (
-              this->pinkRoute.waypoints[next]
-              -
-              this->pinkRoute.waypoints[i]
-            ).Length();
-
-
-          this->pinkRoute.segmentLengths.push_back(
-            segmentLength
-          );
-
-
-          this->pinkRoute.totalLength +=
-            segmentLength;
+            waypointElement = waypointElement->GetNextElement("waypoint");
+          }
         }
 
-
-        if (
-          this->pinkRoute.totalLength
-          <=
-          0.0001
-        )
+        if (this->pinkRoute.waypoints.size() < 2)
         {
           gzerr
-            << "[SphereNetwork] pink_route "
-            << "has zero total length.\n";
+            << "[SphereNetwork] pink_route needs at least two waypoints.\n";
+        }
+        else if (this->pinkRoute.speed <= 0.0)
+        {
+          gzerr
+            << "[SphereNetwork] pink_route speed must be greater than zero.\n";
         }
         else
         {
-          this->pinkRoute.enabled =
-            true;
+          this->pinkRoute.totalLength = 0.0;
+          this->pinkRoute.segmentLengths.clear();
 
+          for (std::size_t i = 0; i < this->pinkRoute.waypoints.size(); ++i)
+          {
+            const std::size_t next =
+              (i + 1) % this->pinkRoute.waypoints.size();
 
-          gzmsg
-            << "[SphereNetwork] Loaded pink route with "
-            << this->pinkRoute.waypoints.size()
-            << " waypoints, speed="
-            << this->pinkRoute.speed
-            << " m/s, loop length="
-            << this->pinkRoute.totalLength
-            << " m.\n";
+            const double segmentLength =
+              (this->pinkRoute.waypoints[next] -
+              this->pinkRoute.waypoints[i]).Length();
+
+            this->pinkRoute.segmentLengths.push_back(segmentLength);
+            this->pinkRoute.totalLength += segmentLength;
+          }
+
+          if (this->pinkRoute.totalLength <= 0.0001)
+          {
+            gzerr
+              << "[SphereNetwork] pink_route has zero total length.\n";
+          }
+          else
+          {
+            this->pinkRoute.enabled = true;
+
+            gzmsg
+              << "[SphereNetwork] Loaded pink route with "
+              << this->pinkRoute.waypoints.size()
+              << " waypoints, speed="
+              << this->pinkRoute.speed
+              << " m/s, loop length="
+              << this->pinkRoute.totalLength
+              << " m.\n";
+          }
         }
       }
-    }
-
-
-    gzmsg
-      << "[SphereNetwork] Ready. "
-      << this->groups.size()
-      << " groups loaded.\n";
-
-    gzmsg
-      << "[SphereNetwork] Waiting for control commands.\n";
-  }
-
-
-  // ==========================================================
-  // PRE UPDATE
-  // ==========================================================
-
-  void PreUpdate(
-    const gz::sim::UpdateInfo &_info,
-    gz::sim::EntityComponentManager &_ecm
-  ) override
-  {
-    if (_info.paused)
-    {
-      return;
-    }
-
-
-    const double now =
-      std::chrono::duration<double>(
-        _info.simTime
-      ).count();
-
-
-    // ========================================================
-    // DELETE ALL / RESET
-    // ========================================================
-
-    if (
-      this->deleteAllRequested.exchange(
-        false
-      )
-    )
-    {
-      this->DeleteAllSpheres();
-
-
-      this->trafficRunning =
-        false;
-
-
-      this->timersInitialised =
-        false;
-
-
-      this->trafficStartRequested.store(
-        false
-      );
-
-
-      this->pinkStartRequested.store(
-        false
-      );
-
-
-      this->sphereCounter =
-        0;
-
-
-      this->lastMotionUpdate =
-        now;
 
 
       gzmsg
-        << "[SphereNetwork] All spheres deleted. "
-        << "Ready for another run.\n";
-
-
-      return;
+        << "[SphereNetwork] Ready. "
+        << this->groups.size()
+        << " groups loaded.\n";
     }
 
+  // PRE UPDATE
 
-    // ========================================================
-    // START TRAFFIC
-    // ========================================================
+  public:
 
-    if (
-      this->trafficStartRequested.exchange(
-        false
-      )
-    )
+    void PreUpdate(
+      const gz::sim::UpdateInfo &_info,
+      gz::sim::EntityComponentManager &_ecm
+    ) override
     {
-      if (!this->trafficRunning)
+      if (_info.paused)
       {
-        this->trafficRunning =
-          true;
+        return;
+      }
 
+      const double now =
+        std::chrono::duration<double>(
+          _info.simTime
+        ).count();
 
-        this->timersInitialised =
-          false;
+      // Delete / reset command
 
+      if (this->deleteAllRequested.exchange(false))
+      {
+        this->DeleteAllSpheres();
+
+        this->trafficRunning = false;
+        this->timersInitialised = false;
+
+        this->trafficStartRequested.store(false);
+        this->pinkStartRequested.store(false);
+
+        this->sphereCounter = 0;
+        this->lastMotionUpdate = now;
+
+        return;
+      }
+
+      // Live pink speed command
+
+      if (this->pinkSpeedChangeRequested.exchange(false))
+      {
+        this->pinkRoute.speed =
+          this->requestedPinkSpeed.load();
 
         gzmsg
-          << "[SphereNetwork] Traffic started.\n";
+          << "[SphereNetwork] Pink speed set to "
+          << this->pinkRoute.speed
+          << " m/s.\n";
       }
-      else
+
+      // Start random traffic
+
+      if (this->trafficStartRequested.exchange(false))
       {
-        gzmsg
-          << "[SphereNetwork] Traffic already running.\n";
-      }
-    }
-
-
-    // ========================================================
-    // START PINK TARGET
-    // ========================================================
-
-    if (
-      this->pinkStartRequested.exchange(
-        false
-      )
-    )
-    {
-      if (
-        this->pinkRoute.enabled
-        &&
-        this->pinkRoute.entity
-        ==
-        gz::sim::kNullEntity
-      )
-      {
-        this->SpawnPinkSphere(
-          now
-        );
-
+        this->trafficRunning = true;
+        this->timersInitialised = false;
 
         gzmsg
-          << "[SphereNetwork] Pink target started.\n";
-      }
-      else if (
-        this->pinkRoute.entity
-        !=
-        gz::sim::kNullEntity
-      )
-      {
-        gzmsg
-          << "[SphereNetwork] Pink target already active.\n";
-      }
-      else
-      {
-        gzerr
-          << "[SphereNetwork] Pink route is not enabled.\n";
-      }
-    }
-
-
-    // ========================================================
-    // INITIALISE TRAFFIC TIMERS
-    // ========================================================
-
-    if (
-      this->trafficRunning
-      &&
-      !this->timersInitialised
-    )
-    {
-      for (
-        auto &group :
-        this->groups
-      )
-      {
-        group.nextSpawnTime =
-          now +
-          this->RandomSpawnDelay(
-            group
-          );
+          << "[SphereNetwork] Traffic start command received.\n";
       }
 
+      // Start dedicated pink target
 
-      this->timersInitialised =
-        true;
-    }
-
-
-    // ========================================================
-    // TRAFFIC SPAWNING
-    // ========================================================
-
-    if (this->trafficRunning)
-    {
-      for (
-        auto &group :
-        this->groups
-      )
+      if (this->pinkStartRequested.exchange(false))
       {
-        if (
-          now
-          >=
-          group.nextSpawnTime
-        )
+        if (this->pinkRoute.enabled &&
+            this->pinkRoute.entity == gz::sim::kNullEntity)
         {
-          this->SpawnSphere(
-            group,
-            now
-          );
-
-
-          group.nextSpawnTime =
-            now +
-            this->RandomSpawnDelay(
-              group
-            );
+          this->SpawnPinkSphere(now);
         }
       }
-    }
 
+      // Initialise traffic timers only after traffic is started.
 
-    // ========================================================
-    // MOTION UPDATE
-    // ========================================================
+      if (this->trafficRunning &&
+          !this->timersInitialised)
+      {
+        for (auto &group : this->groups)
+        {
+          group.nextSpawnTime =
+            now +
+            this->RandomSpawnDelay(group);
+        }
 
-    const double updatePeriod =
-      1.0 /
-      this->motionUpdateRate;
+        this->timersInitialised = true;
+      }
 
+      // Spawn random traffic only while enabled.
 
-    if (
-      now -
-      this->lastMotionUpdate
-      >=
-      updatePeriod
-    )
-    {
-      this->UpdateSpheres(
-        now,
-        _ecm
-      );
+      if (this->trafficRunning)
+      {
+        for (auto &group : this->groups)
+        {
+          if (now >= group.nextSpawnTime)
+          {
+            this->SpawnSphere(
+              group,
+              now
+            );
 
+            group.nextSpawnTime =
+              now +
+              this->RandomSpawnDelay(group);
+          }
+        }
+      }
 
-      this->UpdatePinkSphere(
-        now,
-        _ecm
-      );
+      // Motion update
 
+      const double updatePeriod =
+        1.0 /
+        this->motionUpdateRate;
 
-      this->lastMotionUpdate =
-        now;
-    }
-  }
-
-
-  // ==========================================================
-  // RESET
-  // ==========================================================
-
-  void Reset(
-    const gz::sim::UpdateInfo &,
-    gz::sim::EntityComponentManager &
-  ) override
-  {
-    this->DeleteAllSpheres();
-
-
-    this->trafficRunning =
-      false;
-
-
-    this->timersInitialised =
-      false;
-
-
-    this->lastMotionUpdate =
-      0.0;
-
-
-    this->sphereCounter =
-      0;
-
-
-    this->trafficStartRequested.store(
-      false
-    );
-
-
-    this->pinkStartRequested.store(
-      false
-    );
-
-
-    this->deleteAllRequested.store(
-      false
-    );
-
-
-    gzmsg
-      << "[SphereNetwork] Reset complete.\n";
-  }
-
-
-private:
-
-  // ==========================================================
-  // START TRAFFIC COMMAND
-  // ==========================================================
-
-  void OnStartTraffic(
-    const gz::msgs::Boolean &_msg
-  )
-  {
-    if (!_msg.data())
-    {
-      return;
-    }
-
-
-    this->trafficStartRequested.store(
-      true
-    );
-
-
-    gzmsg
-      << "[SphereNetwork] Traffic start command received.\n";
-  }
-
-
-  // ==========================================================
-  // START PINK COMMAND
-  // ==========================================================
-
-  void OnStartPink(
-    const gz::msgs::Boolean &_msg
-  )
-  {
-    if (!_msg.data())
-    {
-      return;
-    }
-
-
-    this->pinkStartRequested.store(
-      true
-    );
-
-
-    gzmsg
-      << "[SphereNetwork] Pink target command received.\n";
-  }
-
-
-  // ==========================================================
-  // DELETE ALL COMMAND
-  // ==========================================================
-
-  void OnDeleteAll(
-    const gz::msgs::Boolean &_msg
-  )
-  {
-    if (!_msg.data())
-    {
-      return;
-    }
-
-
-    this->deleteAllRequested.store(
-      true
-    );
-
-
-    gzmsg
-      << "[SphereNetwork] Delete/reset command received.\n";
-  }
-
-
-  // ==========================================================
-  // DELETE ALL SPHERES
-  // ==========================================================
-
-  void DeleteAllSpheres()
-  {
-    for (
-      const auto &sphere :
-      this->activeSpheres
-    )
-    {
       if (
-        sphere.entity
-        !=
+        now -
+        this->lastMotionUpdate
+        >= updatePeriod
+      )
+      {
+        this->UpdateSpheres(
+          now,
+          _ecm
+        );
+
+        this->UpdatePinkSphere(
+          now,
+          _ecm
+        );
+
+        this->lastMotionUpdate =
+          now;
+      }
+    }
+
+  // RESET
+
+  public:
+
+    void Reset(
+      const gz::sim::UpdateInfo &,
+      gz::sim::EntityComponentManager &
+    ) override
+    {
+      this->DeleteAllSpheres();
+
+      this->trafficRunning = false;
+      this->timersInitialised = false;
+
+      this->trafficStartRequested.store(false);
+      this->pinkStartRequested.store(false);
+      this->deleteAllRequested.store(false);
+      this->pinkSpeedChangeRequested.store(false);
+
+      this->sphereCounter = 0;
+      this->lastMotionUpdate = 0.0;
+
+      gzmsg
+        << "[SphereNetwork] Reset.\n";
+    }
+
+  // TRANSPORT COMMAND CALLBACKS
+
+  private:
+
+    void OnStartTraffic(
+      const gz::msgs::Boolean &_msg
+    )
+    {
+      if (!_msg.data())
+      {
+        return;
+      }
+
+      this->trafficStartRequested.store(true);
+    }
+
+    void OnStartPink(
+      const gz::msgs::Boolean &_msg
+    )
+    {
+      if (!_msg.data())
+      {
+        return;
+      }
+
+      this->pinkStartRequested.store(true);
+    }
+
+    void OnDeleteAll(
+      const gz::msgs::Boolean &_msg
+    )
+    {
+      if (!_msg.data())
+      {
+        return;
+      }
+
+      this->deleteAllRequested.store(true);
+    }
+
+    void OnPinkSpeed(
+      const gz::msgs::Double &_msg
+    )
+    {
+      double speed =
+        _msg.data();
+
+      if (speed < 0.0)
+      {
+        speed = 0.0;
+      }
+
+      if (speed > 15.0)
+      {
+        speed = 15.0;
+      }
+
+      this->requestedPinkSpeed.store(speed);
+      this->pinkSpeedChangeRequested.store(true);
+    }
+
+  // DELETE ALL SPHERES
+
+  private:
+
+    void DeleteAllSpheres()
+    {
+      for (const auto &sphere : this->activeSpheres)
+      {
+        if (
+          sphere.entity !=
+          gz::sim::kNullEntity
+        )
+        {
+          this->entityCreator->RequestRemoveEntity(
+            sphere.entity
+          );
+        }
+      }
+
+      this->activeSpheres.clear();
+
+      if (
+        this->pinkRoute.entity !=
         gz::sim::kNullEntity
       )
       {
         this->entityCreator->RequestRemoveEntity(
-          sphere.entity
+          this->pinkRoute.entity
         );
+
+        this->pinkRoute.entity =
+          gz::sim::kNullEntity;
       }
+
+      this->pinkRoute.distanceTravelled = 0.0;
+      this->pinkRoute.lastUpdateTime = 0.0;
+      this->pinkRoute.spawnTime = 0.0;
+
+      gzmsg
+        << "[SphereNetwork] Deleted all spheres.\n";
     }
 
+  // RANDOM SPAWN DELAY
 
-    this->activeSpheres.clear();
+  private:
 
-
-    if (
-      this->pinkRoute.entity
-      !=
-      gz::sim::kNullEntity
+    double RandomSpawnDelay(
+      const Group &_group
     )
     {
-      this->entityCreator->RequestRemoveEntity(
-        this->pinkRoute.entity
-      );
+      std::uniform_real_distribution<double>
+        distribution(
+          _group.minSpawnInterval,
+          _group.maxSpawnInterval
+        );
 
 
-      this->pinkRoute.entity =
-        gz::sim::kNullEntity;
-    }
-
-
-    gzmsg
-      << "[SphereNetwork] All sphere entities removed.\n";
-  }
-
-
-  // ==========================================================
-  // RANDOM SPAWN DELAY
-  // ==========================================================
-
-  double RandomSpawnDelay(
-    const Group &_group
-  )
-  {
-    std::uniform_real_distribution<double>
-      distribution(
-        _group.minSpawnInterval,
-        _group.maxSpawnInterval
-      );
-
-
-    return distribution(
-      this->rng
-    );
-  }
-
-
-  // ==========================================================
-  // RANDOM SPEED
-  // ==========================================================
-
-  double RandomSpeed(
-    const Group &_group
-  )
-  {
-    std::uniform_real_distribution<double>
-      distribution(
-        1.0 -
-        this->speedVariation,
-
-        1.0 +
-        this->speedVariation
-      );
-
-
-    return
-      _group.baseSpeed
-      *
-      distribution(
+      return distribution(
         this->rng
       );
-  }
+    }
 
+  // RANDOM SPEED
 
-  // ==========================================================
-  // RANDOM COLOUR
-  // ==========================================================
+  private:
 
-  gz::math::Color RandomColour()
-  {
-    static const std::vector<
-      gz::math::Color
-    > colours =
+    double RandomSpeed(
+      const Group &_group
+    )
     {
-      gz::math::Color(
-        1.00,
-        0.00,
-        0.00,
-        1.00
-      ),
+      std::uniform_real_distribution<double>
+        distribution(
+          1.0 -
+          this->speedVariation,
 
-      gz::math::Color(
-        0.00,
-        1.00,
-        0.10,
-        1.00
-      ),
+          1.0 +
+          this->speedVariation
+        );
 
-      gz::math::Color(
-        0.00,
-        0.25,
-        1.00,
-        1.00
-      ),
+      return
+        _group.baseSpeed *
+        distribution(this->rng);
+    }
 
-      gz::math::Color(
-        1.00,
-        1.00,
-        0.00,
-        1.00
-      ),
+  // RANDOM COLOUR
 
+  private: gz::math::Color RandomColour()
+  {
+    static const std::vector<gz::math::Color> colours =
+    {
+      // RED
       gz::math::Color(
-        0.55,
-        0.05,
-        1.00,
-        1.00
+        1.00, 0.00, 0.00, 1.00
       ),
-
+      // GREEN
       gz::math::Color(
-        1.00,
-        0.35,
-        0.00,
-        1.00
-      )
+        0.00, 1.00, 0.10, 1.00
+      ),
+      // BLUE
+      gz::math::Color(
+        0.00, 0.25, 1.00, 1.00
+      ),
+      // YELLOW
+      gz::math::Color(
+        1.00, 1.00, 0.00, 1.00
+      ),
+      // PURPLE
+      gz::math::Color(
+        0.55, 0.05, 1.00, 1.00
+      ),
+      // ORANGE
+      gz::math::Color(
+        1.00, 0.35, 0.00, 1.00
+      ),
     };
 
-
-    std::uniform_int_distribution<
-      std::size_t
-    > distribution(
+    std::uniform_int_distribution<std::size_t> distribution(
       0,
       colours.size() - 1
     );
 
-
     return colours[
-      distribution(
-        this->rng
-      )
+      distribution(this->rng)
     ];
   }
 
+  // SPAWN ONE SPHERE
 
-  // ==========================================================
-  // SPAWN NORMAL SPHERE
-  // ==========================================================
+  private:
 
-  void SpawnSphere(
-    const Group &_group,
-    const double _now
-  )
-  {
-    const std::string name =
-      "sphere_"
-      +
-      _group.name
-      +
-      "_"
-      +
-      std::to_string(
-        this->sphereCounter++
+    void SpawnSphere(
+      const Group &_group,
+      const double _now
+    )
+    {
+      // Unique name
+
+      const std::string name =
+        "sphere_" +
+        _group.name +
+        "_" +
+        std::to_string(
+          this->sphereCounter++
+        );
+
+      const double speed =
+        this->RandomSpeed(
+          _group
+        );
+
+      const gz::math::Color colour =
+        this->RandomColour();
+
+      // BUILD SPHERE USING SDFormat DOM
+
+      sdf::Sphere sphereShape;
+      sphereShape.SetRadius(
+        this->sphereRadius
       );
 
-
-    const double speed =
-      this->RandomSpeed(
-        _group
+      sdf::Geometry geometry;
+      geometry.SetType(
+        sdf::GeometryType::SPHERE
+      );
+      geometry.SetSphereShape(
+        sphereShape
       );
 
-
-    const gz::math::Color colour =
-      this->RandomColour();
-
-
-    sdf::Sphere sphereShape;
-
-    sphereShape.SetRadius(
-      this->sphereRadius
-    );
-
-
-    sdf::Geometry geometry;
-
-    geometry.SetType(
-      sdf::GeometryType::SPHERE
-    );
-
-    geometry.SetSphereShape(
-      sphereShape
-    );
-
-
-    sdf::Material material;
-
-    material.SetAmbient(
-      colour
-    );
-
-    material.SetDiffuse(
-      colour
-    );
-
-
-    material.SetEmissive(
-      gz::math::Color(
-        colour.R() * 0.20,
-        colour.G() * 0.20,
-        colour.B() * 0.20,
-        1.0
-      )
-    );
-
-
-    sdf::Visual visual;
-
-    visual.SetName(
-      "sphere_visual"
-    );
-
-    visual.SetGeom(
-      geometry
-    );
-
-    visual.SetMaterial(
-      material
-    );
-
-
-    sdf::Link link;
-
-    link.SetName(
-      "sphere_link"
-    );
-
-    link.AddVisual(
-      visual
-    );
-
-
-    sdf::Model modelSdf;
-
-    modelSdf.SetName(
-      name
-    );
-
-
-    modelSdf.SetStatic(
-      true
-    );
-
-
-    modelSdf.SetRawPose(
-      gz::math::Pose3d(
-        _group.start,
-        gz::math::Quaterniond::Identity
-      )
-    );
-
-
-    modelSdf.AddLink(
-      link
-    );
-
-
-    const gz::sim::Entity entity =
-      this->entityCreator->CreateEntities(
-        &modelSdf
+      sdf::Material material;
+      material.SetAmbient(
+        colour
+      );
+      material.SetDiffuse(
+        colour
+      );
+      material.SetEmissive(
+        gz::math::Color(  
+          colour.R() * 0.20,
+          colour.G() * 0.20,
+          colour.B() * 0.20,
+          1.0
+        )
       );
 
+      sdf::Visual visual;
 
-    this->entityCreator->SetParent(
-      entity,
-      this->worldEntity
-    );
+      visual.SetName(
+        "sphere_visual"
+      );
+      visual.SetGeom(
+        geometry
+      );
+      visual.SetMaterial(
+        material
+      );
 
+      sdf::Link link;
 
-    ActiveSphere active;
+      link.SetName(
+        "sphere_link"
+      );
+      link.AddVisual(
+        visual
+      );
 
+      sdf::Model modelSdf;
 
-    active.entity =
-      entity;
+      modelSdf.SetName(
+        name
+      );
+      modelSdf.SetStatic(
+        true
+      );
 
+      modelSdf.SetRawPose(
+        gz::math::Pose3d(
+          _group.start,
+          gz::math::Quaterniond::Identity
+        )
+      );
 
-    active.name =
-      name;
+      modelSdf.AddLink(
+        link
+      );
 
+      // CREATE DIRECTLY IN ECM
 
-    active.groupName =
-      _group.name;
+      const gz::sim::Entity entity =
+        this->entityCreator->CreateEntities(
+          &modelSdf
+        );
 
+      this->entityCreator->SetParent(
+        entity,
+        this->worldEntity
+      );
 
-    active.start =
-      _group.start;
+      ActiveSphere active;
+      active.entity =
+        entity;
+      active.name =
+        name;
+      active.groupName =
+        _group.name;
+      active.start =
+        _group.start;
+      active.direction =
+        _group.direction;
+      active.speed =
+        speed;
+      active.spawnTime =
+        _now;
+      active.pathLength =
+        _group.length;
 
+      this->activeSpheres.push_back(
+        active
+      );
 
-    active.direction =
-      _group.direction;
-
-
-    active.speed =
-      speed;
-
-
-    active.spawnTime =
-      _now;
-
-
-    active.pathLength =
-      _group.length;
-
-
-    this->activeSpheres.push_back(
-      active
-    );
-
-
-    gzmsg
-      << "[SphereNetwork] Spawned ["
-      << name
-      << "] group="
-      << _group.name
-      << " speed="
-      << speed
-      << " m/s\n";
-  }
-
-
-  // ==========================================================
-  // SPAWN PINK TARGET
-  // ==========================================================
+      gzmsg
+        << "[SphereNetwork] Spawned ["
+        << name
+        << "] group="
+        << _group.name
+        << " speed="
+        << speed
+        << " m/s\n";
+    }
+  
+  // SPAWN DEDICATED PINK SPHERE
 
   void SpawnPinkSphere(
     const double _now
   )
   {
-    if (
-      !this->pinkRoute.enabled
-      ||
-      this->pinkRoute.waypoints.empty()
-    )
+    if (!this->pinkRoute.enabled ||
+        this->pinkRoute.waypoints.empty())
     {
       return;
     }
 
-
     sdf::Sphere sphereShape;
-
-    sphereShape.SetRadius(
-      this->sphereRadius
-    );
-
+    sphereShape.SetRadius(this->sphereRadius);
 
     sdf::Geometry geometry;
-
-    geometry.SetType(
-      sdf::GeometryType::SPHERE
-    );
-
-    geometry.SetSphereShape(
-      sphereShape
-    );
-
+    geometry.SetType(sdf::GeometryType::SPHERE);
+    geometry.SetSphereShape(sphereShape);
 
     const gz::math::Color pink(
-      1.00,
-      0.05,
-      0.55,
-      1.00
+      1.00, 0.05, 0.55, 1.00
     );
-
 
     sdf::Material material;
-
-    material.SetAmbient(
-      pink
-    );
-
-
-    material.SetDiffuse(
-      pink
-    );
-
-
+    material.SetAmbient(pink);
+    material.SetDiffuse(pink);
     material.SetEmissive(
-      gz::math::Color(
-        0.20,
-        0.01,
-        0.11,
-        1.0
-      )
+      gz::math::Color(0.20, 0.01, 0.11, 1.0)
     );
-
 
     sdf::Visual visual;
-
-    visual.SetName(
-      "sphere_visual"
-    );
-
-
-    visual.SetGeom(
-      geometry
-    );
-
-
-    visual.SetMaterial(
-      material
-    );
-
+    visual.SetName("sphere_visual");
+    visual.SetGeom(geometry);
+    visual.SetMaterial(material);
 
     sdf::Link link;
-
-    link.SetName(
-      "sphere_link"
-    );
-
-
-    link.AddVisual(
-      visual
-    );
-
+    link.SetName("sphere_link");
+    link.AddVisual(visual);
 
     sdf::Model modelSdf;
-
-    modelSdf.SetName(
-      "pink_route_sphere"
-    );
-
-
-    modelSdf.SetStatic(
-      true
-    );
-
+    modelSdf.SetName("pink_route_sphere");
+    modelSdf.SetStatic(true);
 
     modelSdf.SetRawPose(
       gz::math::Pose3d(
@@ -1374,77 +911,65 @@ private:
       )
     );
 
-
-    modelSdf.AddLink(
-      link
-    );
-
+    modelSdf.AddLink(link);
 
     this->pinkRoute.entity =
-      this->entityCreator->CreateEntities(
-        &modelSdf
-      );
-
+      this->entityCreator->CreateEntities(&modelSdf);
 
     this->entityCreator->SetParent(
       this->pinkRoute.entity,
       this->worldEntity
     );
 
-
-    this->pinkRoute.spawnTime =
-      _now;
-
+    this->pinkRoute.spawnTime = _now;
+    this->pinkRoute.distanceTravelled = 0.0;
+    this->pinkRoute.lastUpdateTime = _now;
 
     gzmsg
-      << "[SphereNetwork] Spawned dedicated "
-      << "pink route sphere.\n";
+      << "[SphereNetwork] Spawned dedicated pink route sphere.\n";
   }
 
-
-  // ==========================================================
-  // UPDATE PINK TARGET
-  // ==========================================================
+  // UPDATE DEDICATED PINK SPHERE
 
   void UpdatePinkSphere(
     const double _now,
     gz::sim::EntityComponentManager &_ecm
   )
   {
-    if (
-      !this->pinkRoute.enabled
-      ||
-      this->pinkRoute.entity
-      ==
-      gz::sim::kNullEntity
-      ||
-      this->pinkRoute.totalLength
-      <=
-      0.0001
-    )
+    if (!this->pinkRoute.enabled ||
+        this->pinkRoute.entity == gz::sim::kNullEntity ||
+        this->pinkRoute.totalLength <= 0.0001)
     {
       return;
     }
 
-
-    const double elapsed =
+    double dt =
       _now -
-      this->pinkRoute.spawnTime;
+      this->pinkRoute.lastUpdateTime;
 
+    if (dt < 0.0)
+    {
+      dt = 0.0;
+    }
 
-    double distance =
+    this->pinkRoute.lastUpdateTime =
+      _now;
+
+    this->pinkRoute.distanceTravelled +=
+      dt *
+      this->pinkRoute.speed;
+
+    this->pinkRoute.distanceTravelled =
       std::fmod(
-        elapsed
-        *
-        this->pinkRoute.speed,
-
+        this->pinkRoute.distanceTravelled,
         this->pinkRoute.totalLength
       );
 
+    double distance =
+      this->pinkRoute.distanceTravelled;
 
     gz::math::Vector3d position =
       this->pinkRoute.waypoints.front();
-
 
     for (
       std::size_t i = 0;
@@ -1455,65 +980,41 @@ private:
       const double segmentLength =
         this->pinkRoute.segmentLengths[i];
 
-
-      if (
-        segmentLength
-        <=
-        0.0001
-      )
+      if (segmentLength <= 0.0001)
       {
         continue;
       }
 
-
-      if (
-        distance
-        <=
-        segmentLength
-      )
+      if (distance <= segmentLength)
       {
         const std::size_t next =
-          (
-            i + 1
-          )
-          %
+          (i + 1) %
           this->pinkRoute.waypoints.size();
-
 
         const double t =
           distance /
           segmentLength;
 
-
         position =
-          this->pinkRoute.waypoints[i]
-          +
+          this->pinkRoute.waypoints[i] +
           (
-            this->pinkRoute.waypoints[next]
-            -
+            this->pinkRoute.waypoints[next] -
             this->pinkRoute.waypoints[i]
-          )
-          *
-          t;
-
+          ) * t;
 
         break;
       }
-
 
       distance -=
         segmentLength;
     }
 
-
     gz::sim::Model model(
       this->pinkRoute.entity
     );
 
-
     model.SetWorldPoseCmd(
       _ecm,
-
       gz::math::Pose3d(
         position,
         gz::math::Quaterniond::Identity
@@ -1521,206 +1022,134 @@ private:
     );
   }
 
+  // UPDATE ACTIVE SPHERES
 
-  // ==========================================================
-  // UPDATE NORMAL SPHERES
-  // ==========================================================
+  private:
 
-  void UpdateSpheres(
-    const double _now,
-    gz::sim::EntityComponentManager &_ecm
-  )
-  {
-    std::size_t i = 0;
-
-
-    while (
-      i
-      <
-      this->activeSpheres.size()
+    void UpdateSpheres(
+      const double _now,
+      gz::sim::EntityComponentManager &_ecm
     )
     {
-      auto &sphere =
-        this->activeSpheres[i];
+      std::size_t i = 0;
 
 
-      const double elapsed =
-        _now -
-        sphere.spawnTime;
-
-
-      const double distance =
-        elapsed *
-        sphere.speed;
-
-
-      if (
-        distance
-        >=
-        sphere.pathLength
+      while (
+        i <
+        this->activeSpheres.size()
       )
       {
-        this->entityCreator->RequestRemoveEntity(
+        auto &sphere =
+          this->activeSpheres[i];
+
+        const double elapsed =
+          _now -
+          sphere.spawnTime;
+
+
+        const double distance =
+          elapsed *
+          sphere.speed;
+
+        // End of path
+
+        if (
+          distance >=
+          sphere.pathLength
+        )
+        {
+          this->entityCreator->RequestRemoveEntity(
+            sphere.entity
+          );
+
+          gzmsg
+            << "[SphereNetwork] Deleted ["
+            << sphere.name
+            << "] at end of "
+            << sphere.groupName
+            << "\n";
+
+          this->activeSpheres.erase(
+            this->activeSpheres.begin() +
+            i
+          );
+
+          continue;
+        }
+
+        const gz::math::Vector3d position =
+          sphere.start +
+          sphere.direction *
+          distance;
+
+        gz::sim::Model model(
           sphere.entity
         );
 
+        model.SetWorldPoseCmd(
+          _ecm,
 
-        gzmsg
-          << "[SphereNetwork] Deleted ["
-          << sphere.name
-          << "] at end of "
-          << sphere.groupName
-          << "\n";
-
-
-        this->activeSpheres.erase(
-          this->activeSpheres.begin()
-          +
-          i
+          gz::math::Pose3d(
+            position,
+            gz::math::Quaterniond::Identity
+          )
         );
-
-
-        continue;
+        ++i;
       }
-
-
-      const gz::math::Vector3d position =
-        sphere.start
-        +
-        sphere.direction
-        *
-        distance;
-
-
-      gz::sim::Model model(
-        sphere.entity
-      );
-
-
-      model.SetWorldPoseCmd(
-        _ecm,
-
-        gz::math::Pose3d(
-          position,
-          gz::math::Quaterniond::Identity
-        )
-      );
-
-
-      ++i;
     }
-  }
 
-
-  // ==========================================================
   // DATA
-  // ==========================================================
 
-  gz::sim::Entity worldEntity{
-    gz::sim::kNullEntity
-  };
+  private:
 
-
-  std::unique_ptr<
-    gz::sim::SdfEntityCreator
-  > entityCreator;
-
-
-  gz::transport::Node
-    transportNode;
-
-
-  std::vector<Group>
-    groups;
-
-
-  PinkRoute
-    pinkRoute;
-
-
-  std::vector<ActiveSphere>
-    activeSpheres;
-
-
-  std::mt19937
-    rng;
-
-
-  std::atomic<bool>
-    trafficStartRequested{
-      false
+    gz::sim::Entity worldEntity{
+      gz::sim::kNullEntity
     };
 
+    std::unique_ptr<
+      gz::sim::SdfEntityCreator
+    > entityCreator;
 
-  std::atomic<bool>
-    pinkStartRequested{
-      false
-    };
+    std::vector<Group> groups;
 
+    PinkRoute pinkRoute;
 
-  std::atomic<bool>
-    deleteAllRequested{
-      false
-    };
+    std::vector<ActiveSphere>
+      activeSpheres;
 
+    std::mt19937 rng;
 
-  bool trafficRunning{
-    false
-  };
+    gz::transport::Node transportNode;
 
+    std::atomic<bool> trafficStartRequested{false};
+    std::atomic<bool> pinkStartRequested{false};
+    std::atomic<bool> deleteAllRequested{false};
 
-  std::size_t sphereCounter{
-    0
-  };
+    std::atomic<double> requestedPinkSpeed{6.0};
+    std::atomic<bool> pinkSpeedChangeRequested{false};
 
-
-  double sphereRadius{
-    0.30
-  };
-
-
-  double speedVariation{
-    0.10
-  };
-
-
-  double motionUpdateRate{
-    60.0
-  };
-
-
-  double lastMotionUpdate{
-    0.0
-  };
-
-
-  bool timersInitialised{
-    false
-  };
+    bool trafficRunning{false};
+    std::size_t sphereCounter{0};
+    double sphereRadius{0.30};
+    double speedVariation{0.10};
+    double motionUpdateRate{60.0};
+    double lastMotionUpdate{0.0};
+    bool timersInitialised{false};
 };
 
 }
 
-
-// ============================================================
 // REGISTER GAZEBO PLUGIN
-// ============================================================
 
 GZ_ADD_PLUGIN(
   sphere_network::SphereNetworkSystem,
-
   gz::sim::System,
-
   sphere_network::SphereNetworkSystem::ISystemConfigure,
-
   sphere_network::SphereNetworkSystem::ISystemPreUpdate,
-
   sphere_network::SphereNetworkSystem::ISystemReset
 )
 
-
 GZ_ADD_PLUGIN_ALIAS(
   sphere_network::SphereNetworkSystem,
-
   "sphere_network::SphereNetworkSystem"
 )
