@@ -103,13 +103,14 @@ class GimbalTracker(Node):
         except json.JSONDecodeError:
             pass
 
-        ## ADDED IN TO STOP INTERFERENCE WITH REACQUISITION
-        def on_sync(self, msg: String):
+    ## ADDED IN TO STOP INTERFERENCE WITH REACQUISITION
+    def on_sync(self, msg: String):
         """Handover from the reacquisition search: it owns the gimbal while hold is True."""
         try:
             d = json.loads(msg.data)
         except json.JSONDecodeError:
             return
+            
         self.hold = bool(d.get("hold", False))
         self.pitch = math.radians(d.get("pitch_deg", math.degrees(self.pitch)))  # resume from the search's angles,
         self.yaw = math.radians(d.get("yaw_deg", math.degrees(self.yaw)))        # not from where the target was lost
