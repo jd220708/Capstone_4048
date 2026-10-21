@@ -78,6 +78,7 @@ class ReacqSearch(Node):
         self.pub_zoom = self.create_publisher(Float64, a.zoom_topic or f"/model/{a.drone_name}/camera/zoom/cmd_zoom", 10)
         self.pub_sync = self.create_publisher(String, "/reacq/gimbal_sync", 10)
         self.pub_state = self.create_publisher(String, "/reacq/state", 10)
+        self.pub_follower_cmd = self.create_publisher(String, "/follower/cmd", 10)
 
         self.gz = GzNode()
         topic = f"/world/{a.world}/pose/info"
@@ -146,7 +147,12 @@ class ReacqSearch(Node):
     def on_status(self, msg):
         try:
             d = json.loads(msg.data)
-            self.tracker_gimbal = (math.radians(d["pitch_deg"]), math.radians(d["yaw_deg"]))
+            p_rad = math.radians(d["pitch_deg"])
+            y_rad = math.radians(d["yaw_deg"])
+            self.tracker_gimbal = (p_rad, y_rad)
+            if self.core.state == "SEARCH":
+                self.core.gimbal.pitch = p_rad
+                self.core.gimbal.yaw = y_rad
         except (json.JSONDecodeError, KeyError):
             pass
 
@@ -202,6 +208,12 @@ class ReacqSearch(Node):
     def end_episode(self, truth):
         ep = self.core.last_episode
         self.sync(False, self.core.gimbal.pitch, self.core.gimbal.yaw)   # hand the gimbal back to the tracker
+        
+        # Automatically restart follower if successfully reacquired
+        if ep["outcome"] == "REACQUIRED":
+            self.pub_follower_cmd.publish(String(data="START"))
+            self.get_logger().info("Target reacquired — restarting follower automatically.")
+
         row = {"strategy": ep["strategy"], "outcome": ep["outcome"], "t_loss": round(ep["t_loss"], 2),
                "duration_s": round(ep["duration"], 2), "views": ep["views"], "gimbal_deg": round(ep["gimbal_deg"], 1),
                "plan_ms": round(ep["compute_ms"], 1)}
