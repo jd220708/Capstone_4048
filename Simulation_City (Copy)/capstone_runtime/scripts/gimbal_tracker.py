@@ -83,6 +83,9 @@ class GimbalTracker(Node):
         self.pub_yaw = self.create_publisher(
             Float64, "/model/x500_gimbal_0/command/gimbal_yaw_demo", 10)
         self.pub_status = self.create_publisher(String, "/gimbal_tracker/status", 10)
+        ## ADDED TO STOP IT KEEPING ITS OWN COPY OF GIMBAL ANGLES, KEEPING IT FROM FIGHTING THE SEARCH
+        self.hold = False   # True while the reacquisition search owns the gimbal
+        self.create_subscription(String, "/reacq/gimbal_sync", self.on_sync, 10)
 
         self.timer = self.create_timer(1.0 / a.rate, self.tick)
         self.pending = None       # newest detection frame, consumed by tick()
@@ -99,6 +102,18 @@ class GimbalTracker(Node):
             self.pending = json.loads(msg.data)
         except json.JSONDecodeError:
             pass
+
+        ## ADDED IN TO STOP INTERFERENCE WITH REACQUISITION
+        def on_sync(self, msg: String):
+        """Handover from the reacquisition search: it owns the gimbal while hold is True."""
+        try:
+            d = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return
+        self.hold = bool(d.get("hold", False))
+        self.pitch = math.radians(d.get("pitch_deg", math.degrees(self.pitch)))  # resume from the search's angles,
+        self.yaw = math.radians(d.get("yaw_deg", math.degrees(self.yaw)))        # not from where the target was lost
+        self.locked_id = None                                                    # treat the next sighting as new
 
     def pick_target(self, dets):
         """Choose which sphere to follow, and stay with it."""
@@ -133,6 +148,10 @@ class GimbalTracker(Node):
 
     # ------------------------------------------------------------------
     def tick(self):
+      ## ADDED
+        if self.hold:
+            return
+            
         now = time.monotonic()
         frame = self.pending
         target = None
